@@ -7,7 +7,7 @@
 
   <ItemGroup>
     <Compile Include="TextHandling.fs" />
-    <Compile Include="Library.fs" />
+    <Compile Include="ParsingHelpers.fs" />
   </ItemGroup>
 
   <ItemGroup>
