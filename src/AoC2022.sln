@@ -3,11 +3,13 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "AoC2022.Day1", "AoC2022.Day1\AoC2022.Day1.fsproj", "{B773577A-BFEF-4355-B9C2-EDFBB56C556B}"
+Project("{6EC3EE1D-3C4E-46DD-8F32-0CC8E7565705}") = "AoC2022.Day1", "AoC2022.Day1\AoC2022.Day1.fsproj", "{B773577A-BFEF-4355-B9C2-EDFBB56C556B}"
 EndProject
-Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "AoC2022.Common", "AoC2022.Common\AoC2022.Common.fsproj", "{FC2B9B49-5593-499C-A9FB-0E0C6F96CC4B}"
+Project("{6EC3EE1D-3C4E-46DD-8F32-0CC8E7565705}") = "AoC2022.Common", "AoC2022.Common\AoC2022.Common.fsproj", "{FC2B9B49-5593-499C-A9FB-0E0C6F96CC4B}"
 EndProject
-Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "AoC2022.Day2", "AoC2022.Day2\AoC2022.Day2.fsproj", "{3E734B20-69ED-4A25-A9EE-B41720D3EE11}"
+Project("{6EC3EE1D-3C4E-46DD-8F32-0CC8E7565705}") = "AoC2022.Day2", "AoC2022.Day2\AoC2022.Day2.fsproj", "{3E734B20-69ED-4A25-A9EE-B41720D3EE11}"
+EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "AoC2022.Day3", "AoC2022.Day3\AoC2022.Day3.fsproj", "{864BCF9A-3EAB-4855-9C09-505BB7BF1208}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -27,6 +29,10 @@ Global
 		{3E734B20-69ED-4A25-A9EE-B41720D3EE11}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{3E734B20-69ED-4A25-A9EE-B41720D3EE11}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{3E734B20-69ED-4A25-A9EE-B41720D3EE11}.Release|Any CPU.Build.0 = Release|Any CPU
+		{864BCF9A-3EAB-4855-9C09-505BB7BF1208}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{864BCF9A-3EAB-4855-9C09-505BB7BF1208}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{864BCF9A-3EAB-4855-9C09-505BB7BF1208}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{864BCF9A-3EAB-4855-9C09-505BB7BF1208}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
