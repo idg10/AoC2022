@@ -48,4 +48,40 @@ let sumPriorities lines =
     
 sumPriorities testLines =! 157
 
+let getGroupLines (lines: string seq) =
+    Seq.chunkBySize 3 lines
+    |> List.ofSeq
+
+let testGroups = getGroupLines testLines
+let inputGroups = getGroupLines inputLines
+
+// Test that our grouping logic works
+testGroups =! [
+    [|"vJrwpWtwJgWrhcsFMMfFFhFp";"jqHRNqRjqzjGDLGLrsFMfFZSrLrFZsSL";"PmmdzqPrVvPwwTWBwg"|];
+    [|"wMqvLMZHhHMvwLHjbvcjnnSBnvTQFn";"ttgJtRGJQctTZtZT";"CrZsJsPPZsGzwwsLwLmpwMDw"|];
+]
+
+let commonItem (rucksacks:string seq) =
+    rucksacks
+    |> Seq.map Set.ofSeq
+    |> Set.intersectMany
+    |> Seq.exactlyOne
+
+commonItem testGroups.[0] =! 'r'
+commonItem testGroups.[1] =! 'Z'
+
+let getPriorityForCommonItem rucksacks =
+    commonItem rucksacks
+    |> getPriority
+
+getPriorityForCommonItem testGroups.[0] =! 18
+getPriorityForCommonItem testGroups.[1] =! 52
+
+let sumPrioritiesForCommonItems rucksackGroups =
+    rucksackGroups
+    |> Seq.sumBy getPriorityForCommonItem
+
+testGroups |> Seq.take 2 |> sumPrioritiesForCommonItems =! 70
+
 printf "Part 1: %d\n" (sumPriorities inputLines)
+printf "Part 2: %d\n" (sumPrioritiesForCommonItems inputGroups)
