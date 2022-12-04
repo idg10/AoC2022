@@ -161,11 +161,32 @@ assignmentFullyOverlaps testAssignments.[3] =! true
 assignmentFullyOverlaps testAssignments.[4] =! true
 assignmentFullyOverlaps testAssignments.[5] =! false
 
-let countOverlaps (assignments:SectionAssignment list) =
+let countContainingOverlaps (assignments:SectionAssignment list) =
     assignments
     |> Seq.filter assignmentFullyOverlaps
     |> Seq.length
 
-countOverlaps testAssignments =! 2
+countContainingOverlaps testAssignments =! 2
 
-printf "Part 1: %d\n" <| countOverlaps inputAssignments
+printf "Part 1: %d\n" <| countContainingOverlaps inputAssignments
+
+let overlaps r1 r2 =
+    getOverlap r1 r2 <> NoOverlap
+
+let assignmentOverlaps (SectionAssignment (r1, r2)) = overlaps r1 r2
+
+assignmentOverlaps testAssignments.[0] =! false
+assignmentOverlaps testAssignments.[1] =! false
+assignmentOverlaps testAssignments.[2] =! true
+assignmentOverlaps testAssignments.[3] =! true
+assignmentOverlaps testAssignments.[4] =! true
+assignmentOverlaps testAssignments.[5] =! true
+
+let countOverlaps (assignments:SectionAssignment list) =
+    assignments
+    |> Seq.filter assignmentOverlaps
+    |> Seq.length
+
+countOverlaps testAssignments =! 4
+
+printf "Part 2: %d\n" <| countOverlaps inputAssignments
