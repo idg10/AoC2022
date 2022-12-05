@@ -124,15 +124,11 @@ ts3 =! Stacks
         [Crate 'P']
     ]
 
-// For reasons I don't understand, I ended up needing to spell out the full type of this
-// function. Without this, List.fold insisted on inferring wrong type arguments, and then
-// complaining about the types of the arguments I had supplied
-let rotateStackCrateDescriptions:(int -> ((Crate option list) list) -> Stacks) =
-    fun stackCount crateRows ->
-        List.fold
-            addStackRow
-            (initializeStacks stackCount)
-            crateRows
+let rotateStackCrateDescriptions stackCount crateRows =
+    List.fold
+        addStackRow
+        (initializeStacks stackCount)
+        crateRows
 
 let makeStacks input =
     let (Input (stackCount, crateRows, _)) = testp pInput input 
@@ -171,15 +167,39 @@ applyMove testStacks (Move (1, 2, 1)) =! Stacks
         [Crate 'P']
     ]
 
+// Same as above, but we don't flip the order, because the crane moves multiple crates at once.
+let applyMove2 (Stacks currentStacks) (Move (quantity, fromIndex, toIndex)) =
+    let itemsToMove = currentStacks.[fromIndex - 1] |> List.take quantity
+    List.mapi
+        (fun index stack ->
+            if index = (fromIndex-1) then (List.skip quantity stack)
+            else if index = (toIndex-1) then (List.concat [itemsToMove;stack])
+            else stack
+        )
+        currentStacks
+    |> Stacks
+
+applyMove2 (Stacks [[Crate 'A'];[];[]]) (Move (1, 1, 2)) =! (Stacks [[];[Crate 'A'];[]])
+applyMove2 (Stacks [[Crate 'A'; Crate 'B'; Crate 'C'];[];[]]) (Move (2, 1, 3)) =! (Stacks [[Crate 'C'];[];[Crate 'A'; Crate 'B']])
+
 let allMoves stacks moves =
     Seq.scan
         applyMove
         stacks
         moves
 
+let allMoves2 stacks moves =
+    Seq.scan
+        applyMove2
+        stacks
+        moves
+
 let allMovesForInput (Input (stackCount, crateRows, moves)) =
     let stacks = rotateStackCrateDescriptions stackCount crateRows
     allMoves stacks moves
+let allMoves2ForInput (Input (stackCount, crateRows, moves)) =
+    let stacks = rotateStackCrateDescriptions stackCount crateRows
+    allMoves2 stacks moves
 
 let testMoves = allMovesForInput testInput |> List.ofSeq
 
@@ -208,6 +228,33 @@ testMoves.[4] =! Stacks
         [Crate 'Z'; Crate 'N'; Crate 'D'; Crate 'P']
     ]
 
+let testMoves2 = allMoves2ForInput testInput |> List.ofSeq
+
+testMoves2.[1] =! Stacks
+    [
+        [Crate 'D'; Crate 'N'; Crate 'Z'];
+        [Crate 'C'; Crate 'M'];
+        [Crate 'P']
+    ]
+testMoves2.[2] =! Stacks
+    [
+        [];
+        [Crate 'C'; Crate 'M'];
+        [Crate 'D'; Crate 'N'; Crate 'Z'; Crate 'P']
+    ]
+testMoves2.[3] =! Stacks
+    [
+        [Crate 'C'; Crate 'M'];
+        [];
+        [Crate 'D'; Crate 'N'; Crate 'Z'; Crate 'P']
+    ]
+testMoves2.[4] =! Stacks
+    [
+        [Crate 'M'];
+        [Crate 'C'];
+        [Crate 'D'; Crate 'N'; Crate 'Z'; Crate 'P']
+    ]
+
 let getFinalStackStates input =
     let (Stacks stacks) = allMovesForInput input |> Seq.last
     stacks
@@ -217,4 +264,14 @@ let getFinalStackStates input =
 
 getFinalStackStates testInput =! "CMZ"
 
+let getFinalStackStates2 input =
+    let (Stacks stacks) = allMoves2ForInput input |> Seq.last
+    stacks
+    |> Seq.map List.head
+    |> Seq.map (fun (Crate c) -> string c)
+    |> String.concat ""
+
+getFinalStackStates2 testInput =! "MCD"
+
 printf "Part 1: %s\n" (getFinalStackStates input)
+printf "Part 2: %s\n" (getFinalStackStates2 input)
