@@ -1,7 +1,6 @@
 ﻿open FParsec
 open Swensen.Unquote
 
-open ParsingHelpers
 open TextHandling
 
 let startMarkerDetector candidate =
@@ -34,10 +33,12 @@ fourUniqueScanner "abcd"  |> List.ofSeq =! [false; false; false; true]
 fourUniqueScanner "aabcd" |> List.ofSeq  =! [false; false; false; false; true]
 fourUniqueScanner "abcdba" |> List.ofSeq =! [false; false; false; true; false; true]
 
-let offsetOfFirstFourUnique input =
-    (fourUniqueScanner input
+let offsetOfFirstNUnique n input =
+    ((startMarkerScanner n startMarkerDetector) input
      |> Seq.takeWhile not
      |> Seq.length) + 1
+
+let offsetOfFirstFourUnique = offsetOfFirstNUnique 4
 
 offsetOfFirstFourUnique "mjqjpqmgbljsphdztnvjfqwrcgsmlb" =! 7
 offsetOfFirstFourUnique "bvwbjplbgvbhsrlpgdmjqwftvncz" =! 5
@@ -45,4 +46,15 @@ offsetOfFirstFourUnique "nppdvjthqldpwncqszvftbrmjlhg" =! 6
 offsetOfFirstFourUnique "nznrnfrfntjfmvfwmzdfjlvtqnbhcprsg" =! 10
 offsetOfFirstFourUnique "zcfzfwzzqfrljwzlrfnpqdbhtmscgvjw" =! 11
 
+
 printf "Part 1: %d\n" (offsetOfFirstFourUnique (getEmbeddedInput ()))
+
+let offsetOfFirstFourteenUnique = offsetOfFirstNUnique 14
+
+offsetOfFirstFourteenUnique "mjqjpqmgbljsphdztnvjfqwrcgsmlb" =! 19
+offsetOfFirstFourteenUnique "bvwbjplbgvbhsrlpgdmjqwftvncz" =! 23
+offsetOfFirstFourteenUnique "nppdvjthqldpwncqszvftbrmjlhg" =! 23
+offsetOfFirstFourteenUnique "nznrnfrfntjfmvfwmzdfjlvtqnbhcprsg" =! 29
+offsetOfFirstFourteenUnique "zcfzfwzzqfrljwzlrfnpqdbhtmscgvjw" =! 26
+
+printf "Part 2: %d\n" (offsetOfFirstFourteenUnique (getEmbeddedInput ()))
