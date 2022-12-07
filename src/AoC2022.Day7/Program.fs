@@ -248,7 +248,7 @@ let rec fsEntrySizes:(FsEntry -> (((string * bigint) list) * bigint)) = fun dir 
 let testSizeList = fsEntrySizes testRoot |> fst
 let inputSizeList = fsEntrySizes root |> fst
 
-printf "%A\n" testSizeList
+//printf "%A\n" testSizeList
 List.find (fun (n, s) -> n = "e") testSizeList |> snd =! bigint 584
 List.find (fun (n, s) -> n = "a") testSizeList |> snd =! bigint 94853
 List.find (fun (n, s) -> n = "d") testSizeList |> snd =! bigint 24933642
@@ -263,8 +263,8 @@ let sumForPart1 dirs = dirsForPart1 dirs |> Seq.sumBy snd
 
 sumForPart1 testSizeList =! bigint 95437
 
-printf "%A\n" root
-printf "%A\n" (dirsForPart1 inputSizeList |> List.ofSeq)
+//printf "%A\n" root
+//printf "%A\n" (dirsForPart1 inputSizeList |> List.ofSeq)
 
 let part1map = sumForPart1 inputSizeList
 printf "Part 1: %A\n" part1map
@@ -295,4 +295,27 @@ $ ls
 7214296 k"""
 
 let testRoot2 = (buildFsFromConsoleOutput <| testp pParseConsoleOutput testInputText2)
-printf "%A\n" testRoot2
+//printf "%A\n" testRoot2
+
+let findFreeSpace (sizeList:(string * bigint) list) =
+    let usedSpace = List.find (fun (n, s) -> n = "/") sizeList |> snd
+    (bigint 70000000) - usedSpace
+
+findFreeSpace testSizeList =! bigint 21618835
+
+let findFoldersLargeEnoughToFreeUpSpace sizeList =
+    let freeSpace = findFreeSpace sizeList
+    let additionalSpaceRequired = (bigint 30000000) - freeSpace
+    sizeList |> Seq.filter (fun (_, size) -> size >= additionalSpaceRequired)
+
+findFoldersLargeEnoughToFreeUpSpace testSizeList |> List.ofSeq =! [("/", bigint 48381165); ("d", bigint 24933642)]
+
+let findBestFolderToFreeUp (sizeList:(string*bigint) list) =
+    findFoldersLargeEnoughToFreeUpSpace sizeList
+    |> Seq.sortBy snd
+    |> Seq.take 1
+    |> Seq.exactlyOne
+
+findBestFolderToFreeUp testSizeList =! ("d", bigint 24933642)
+
+printf "Part 2: %A\n" (findBestFolderToFreeUp inputSizeList)
