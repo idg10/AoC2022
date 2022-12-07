@@ -197,6 +197,7 @@ let buildFsFromConsoleOutput (output:ConsoleOutput) =
     slashFolder
 
 let testRoot = (buildFsFromConsoleOutput <| testp pParseConsoleOutput testInputText)
+let root = (buildFsFromConsoleOutput <| testp pParseConsoleOutput inputText)
 
 testRoot =! FsDirectory (
     "/",
@@ -224,21 +225,74 @@ testRoot =! FsDirectory (
         FsFile (8504156, "c.dat");
     ])
 
-let rec fsEntrySizes:(FsEntry -> (Map<string, bigint> * bigint)) = fun dir ->
+let rec fsEntrySizes:(FsEntry -> (((string * bigint) list) * bigint)) = fun dir ->
     match dir with
     | FsDirectory (dirName, dirContents) ->
-        dirContents
-        |> List.fold
-            (fun (map, total) item ->
-                match item with
-                | FsFile (size, name) -> (map, total + (bigint size))
-                | FsDirectory (name, contents) ->
-                    let (dirMap, dirSize) = fsEntrySizes (FsDirectory (name, contents))
-                    let combinedMap = Map.fold (fun m key value -> Map.add key value m) map dirMap
-                    (combinedMap.Add(name, dirSize), total + dirSize) 
-            )
-            (Map.empty, bigint 0)
+        let (descendantSizes, dirSize) =
+            dirContents
+            |> List.fold
+                (fun (descendantSizesAcc, totalFileSizeThisFolderAndDecendants) item ->
+                    match item with
+                    | FsFile (fileSize, _) -> (descendantSizesAcc, totalFileSizeThisFolderAndDecendants + (bigint fileSize))
+                    | FsDirectory (childDirName, childDirContents) ->
+                        let (childDirSizes, dirSize) = fsEntrySizes (FsDirectory (childDirName, childDirContents))
+                        //let combinedMap = Map.fold (fun m key value -> Map.add key value m) map dirMap
+                        let combinedSizes = List.concat [descendantSizesAcc; childDirSizes]
+                        (combinedSizes, totalFileSizeThisFolderAndDecendants + dirSize)
+                )
+                ([], bigint 0)
+        ((dirName, dirSize)::descendantSizes, dirSize)
     | _ -> failwith "Can only use this on directories"
 
 
-//printf "%A\n" (fsEntrySizes testRoot)
+let testSizeList = fsEntrySizes testRoot |> fst
+let inputSizeList = fsEntrySizes root |> fst
+
+printf "%A\n" testSizeList
+List.find (fun (n, s) -> n = "e") testSizeList |> snd =! bigint 584
+List.find (fun (n, s) -> n = "a") testSizeList |> snd =! bigint 94853
+List.find (fun (n, s) -> n = "d") testSizeList |> snd =! bigint 24933642
+List.find (fun (n, s) -> n = "/") testSizeList |> snd =! bigint 48381165
+
+let directoriesNoLargerThan max dirs =
+    dirs
+    |> Seq.filter (fun (_, size) -> size <= max)
+
+let dirsForPart1 dirs = directoriesNoLargerThan (bigint 100000) dirs
+let sumForPart1 dirs = dirsForPart1 dirs |> Seq.sumBy snd
+
+sumForPart1 testSizeList =! bigint 95437
+
+printf "%A\n" root
+printf "%A\n" (dirsForPart1 inputSizeList |> List.ofSeq)
+
+let part1map = sumForPart1 inputSizeList
+printf "Part 1: %A\n" part1map
+
+
+let testInputText2 = """$ cd /
+$ ls
+dir a
+14848514 b.txt
+8504156 c.dat
+dir d
+$ cd a
+$ ls
+dir e
+29116 f
+2557 g
+62596 h.lst
+$ cd a
+$ ls
+584 i
+$ cd ..
+$ cd ..
+$ cd d
+$ ls
+4060174 j
+8033020 d.log
+5626152 d.ext
+7214296 k"""
+
+let testRoot2 = (buildFsFromConsoleOutput <| testp pParseConsoleOutput testInputText2)
+printf "%A\n" testRoot2
