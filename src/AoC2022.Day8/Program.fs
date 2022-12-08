@@ -110,7 +110,7 @@ let visibilityFromLeftOrRight perspective grid =
     |> Array.ofSeq
     |> array2D
 
-let rotate2DArray arr =
+let flip2DArrayAlongDiagonal arr =
     let rowCount = Array2D.length1 arr
     let columnCount = Array2D.length2 arr
     [0..(columnCount - 1)]
@@ -120,7 +120,20 @@ let rotate2DArray arr =
         )
     |> array2D
 
-rotate2DArray (array2D [[1;2];[3;4];[5;6]]) =! (array2D [[1;3;5];[2;4;6]])
+flip2DArrayAlongDiagonal (array2D [[1;2];[3;4];[5;6]]) =! (array2D [[1;3;5];[2;4;6]])
+
+let rotate2DArrayClockwise arr =
+    let rowCount = Array2D.length1 arr
+    let columnCount = Array2D.length2 arr
+    [0..(columnCount - 1)]
+    |> Seq.map (fun column ->
+        [1..(rowCount)]
+        |> Seq.map (fun row -> arr[rowCount - row, column])
+        )
+    |> array2D
+
+rotate2DArrayClockwise (array2D [[1;2];[3;4]]) =! (array2D [[3;1];[4;2]])
+
 
 let visibilityFromTopOrBottom perspective grid =
     let columnCount = Array2D.length2 grid
@@ -130,7 +143,7 @@ let visibilityFromTopOrBottom perspective grid =
     |> Array.ofSeq
     |> Seq.map (fun a -> if perspective = Bottom then Array.rev a else a)
     |> array2D
-    |> rotate2DArray
+    |> flip2DArrayAlongDiagonal
 
 let visibilityFromLeft = visibilityFromLeftOrRight Left
 let visibilityFromRight = visibilityFromLeftOrRight Right
@@ -155,7 +168,7 @@ let printBoolGrid = printGrid (fun b -> if b then 'T' else 'F')
 //printBoolGrid (visibilityFromBottom testGrid)
 //printf "\n"
 
-let mergeBoolGrids merge grid1 grid2 =
+let mergeGrids merge grid1 grid2 =
     let rowCount = Array2D.length1 grid1
     let columnCount = Array2D.length2 grid2
     [0..(rowCount - 1)]
@@ -164,7 +177,7 @@ let mergeBoolGrids merge grid1 grid2 =
         |> Seq.map (fun column -> merge grid1[row, column] grid2[row, column]))
     |> array2D
 
-let mergeWithOr = mergeBoolGrids (fun x y -> x || y)
+let mergeWithOr = mergeGrids (fun x y -> x || y)
 
 mergeWithOr (array2D [[false;false];[true;true]]) (array2D [[false;true];[false;true]]) =! array2D [[false;true];[true;true]]
 mergeWithOr
@@ -181,15 +194,128 @@ let visibility grid =
 
 //printBoolGrid (visibility testGrid)
 
-let countVisible grid =
+let array2dAsSeq arr =
     // I can't see a way to convert an array2D into a seq of seqs
-    let bools = (visibility grid)
-    let rowCount = Array2D.length1 bools
+    let rowCount = Array2D.length1 arr
     [0..(rowCount - 1)]
-    |> Seq.collect (fun row -> bools[row, *])
+    |> Seq.collect (fun row -> arr[row, *])
+
+let countVisible grid =
+    let bools = (visibility grid)
+    array2dAsSeq bools
     |> Seq.filter id
     |> Seq.length
 
 countVisible testGrid =! 21
 
 printf "Part 1: %d\n" (countVisible inputGrid)
+
+let cumulativeVisibility (heights:int seq) =
+    heights
+    |> Seq.scan
+        (fun (distanceTo:(int -> int), maxHeight, _) height ->
+            let distance = distanceTo height
+            (fun h ->
+                if h <= height then
+                    // We are as tall as or taller than a subsequent tree looking in our
+                    // direction, so the buck stops here
+                    1
+                else
+                    // We are not in the way, so pass the buck
+                    1 + (distanceTo h)),
+            0,
+            distance)
+
+            // This logic turned out to be wrong - it assumed that in cases like this:
+            // 33549
+            // that 9 wouldn't be able to see over the top of the 5 to the 3s. But apparently
+            // it can. (It's a bit unclear, because in real life you'd need to work out angles.
+            // Probably one of the 3s would be visible but the other wouldn't.) The examples
+            // given in the instructions didn't resolve this, so I initially assumed that
+            // a tree would block any lower trees behind it. E.g.
+            //                (H)
+            //    ^            ^
+            //    ^            ^
+            //    ^            ^
+            //    ^            ^
+            //    ^            ^
+            //    ^            ^
+            //    ^            ^
+            //    ^            ^
+            // ^  ^            ^
+            // 1  2            3
+            //
+            // The question is can the treehouse at (H) (on top of 3) see the tree at 1. It
+            // looks pretty obvious that it can't, but according to the puzzle logic, it
+            // can.
+            // The following code implemented my assumption that 1 would be invisible to (H).
+            //if height > maxHeight then
+            //    // This is the tallest tree. It blocks out everything behind it, so our
+            //    // distance function becomes simple - this will be the only visible tree.
+            //    ((fun _ -> 1), height, distance)
+            //else
+            //    // There are taller trees behind this one, so for subsequent trees taller
+            //    // than us, it's as though we're not here.
+            //    ((fun h -> if h > height then (distanceTo h) + 1 else 1), maxHeight, distance))
+        (
+            // The first part of the state is a function which returns the distance you can see from
+            // a particular height. Initially this is always zero. As we walk along, we modify this
+            // function.
+            (fun _ -> 0),
+            0,
+            0)
+    |> Seq.skip 1
+    |> Seq.map (fun (_, _, x) -> x)
+
+cumulativeVisibility [3;0;3;7;3] |> List.ofSeq =! [0;1;2;3;1]
+
+// The instructions tells us about the tree of height 5 in the middle of the 2nd row.
+// These cover that (and also visibility for all other trees in the relevant rows and columns)
+cumulativeVisibility [2;5;5;1;1] |> List.ofSeq =! [0;1;1;1;1]   // Looking left (accumulate from left to right)
+cumulativeVisibility [0;5;5;3;3] |> List.ofSeq =! [0;1;1;1;1]   // Looking up (accumulate from top to bottom)
+cumulativeVisibility [1;1;5;5;2] |> List.ofSeq =! [0;1;2;1;1]   // Looking right (accumulate from right to left)
+cumulativeVisibility [3;3;5;5;0] |> List.ofSeq =! [0;1;2;1;1]   // Looking down (accumulate from bottom to top)
+
+// They also tell us about the tree of height 5 in the middle of the 4th row
+//cumulativeVisibility [3;3;5;4;9] |> List.ofSeq =! [0;1;2;1;2]   // Not clear if that final measure is correct. Can the 9 tree on the right see every single tree? Or are the two 3 trees blocked by the 5? We're assuming the latter.
+// Well that produced a wrong answer. Let's try it with the other hypothesis
+cumulativeVisibility [3;3;5;4;9] |> List.ofSeq =! [0;1;2;1;4]
+cumulativeVisibility [9;4;5;3;3] |> List.ofSeq =! [0;1;2;1;1]
+
+let leftScore grid =
+    let rowCount = Array2D.length1 grid
+    let columnCount = Array2D.length2 grid
+    [0..(rowCount - 1)]
+    |> Seq.map (fun row -> cumulativeVisibility grid[row, *])
+    |> array2D
+
+let downScore grid = grid |> rotate2DArrayClockwise |> leftScore |> rotate2DArrayClockwise |> rotate2DArrayClockwise |> rotate2DArrayClockwise 
+let rightScore grid = grid |> rotate2DArrayClockwise |> rotate2DArrayClockwise |> leftScore |> rotate2DArrayClockwise |> rotate2DArrayClockwise 
+let upScore grid = grid |> rotate2DArrayClockwise |> rotate2DArrayClockwise |> rotate2DArrayClockwise |> leftScore |> rotate2DArrayClockwise 
+
+printf "%A\n" (leftScore testGrid)
+printf "\n"
+printf "%A\n" (upScore testGrid)
+printf "\n"
+printf "%A\n" (rightScore testGrid)
+printf "\n"
+printf "%A\n" (downScore testGrid)
+printf "\n"
+
+let mergeWithMultiply = mergeGrids (fun x y -> x * y)
+let scenicScore grid =
+    [upScore; rightScore; downScore]
+    |> Seq.fold
+        (fun v m -> mergeWithMultiply v (m grid))
+        (leftScore grid)
+
+printf "%A\n" (scenicScore testGrid)
+
+let findMaxScenicScore grid =
+    scenicScore grid
+    |> array2dAsSeq
+    |> Seq.max
+
+findMaxScenicScore testGrid =! 8
+
+printf "Part 2: %d\n" (findMaxScenicScore inputGrid)
