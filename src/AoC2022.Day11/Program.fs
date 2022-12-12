@@ -45,7 +45,7 @@ type Operation = OperationExpression of operator:OperationOperator * rhs:Operati
 type MonkeyNotes =
     Monkey of
         id:int *
-        startingItems:bigint list *
+        startingItems:int64 list *
         operation:Operation *
         testDivisbleBy: int *
         throwToMonkeyIdIfTrue: int *
@@ -95,7 +95,7 @@ let parseMonkey<'a> : Parser<MonkeyNotes, 'a> =
         (spaces >>. parseDivisibleBy .>> newline)
         (parseActions)
         (fun id startingItems op divby (ifTrue, ifFalse) ->
-            Monkey (id, startingItems |> List.map bigint, op, divby, ifTrue, ifFalse))
+            Monkey (id, startingItems |> List.map int64, op, divby, ifTrue, ifFalse))
 
 let parseMonkeys<'a> : Parser<MonkeyNotes list, 'a> =
     sepBy parseMonkey (many1 newline)
@@ -103,17 +103,33 @@ let parseMonkeys<'a> : Parser<MonkeyNotes list, 'a> =
 let testMonkeys = testp parseMonkeys testInput
 let monkeys = testp parseMonkeys input
 
-testMonkeys[0] =! Monkey (0, [bigint 79; bigint 98], OperationExpression (Multiply, Value 19), 23, 2, 3)
-testMonkeys[1] =! Monkey (1, [bigint 54; bigint 65; bigint 75; bigint 74], OperationExpression (Add, Value 6), 19, 2, 0)
-testMonkeys[2] =! Monkey (2, [bigint 79; bigint 60; bigint 97], OperationExpression (Multiply, Old), 13, 1, 3)
-testMonkeys[3] =! Monkey (3, [bigint 74], OperationExpression (Add, Value 3), 17, 0, 1)
+let rec gcd a b =
+    let r = a % b
+    if r = (int64 0) then b
+    else gcd b r
+
+let lcm a b =
+    (a / (gcd a b)) * b
+
+let divisorsCombined =
+    Seq.concat [testMonkeys; monkeys]
+    |> Seq.fold
+        (fun state (Monkey (_,_,_,testDivisibleBy,_,_)) -> lcm state (int64 testDivisibleBy))
+        (int64 1)
+
+printf "%A\n" divisorsCombined
+
+testMonkeys[0] =! Monkey (0, [int64 79; int64 98], OperationExpression (Multiply, Value 19), 23, 2, 3)
+testMonkeys[1] =! Monkey (1, [int64 54; int64 65; int64 75; int64 74], OperationExpression (Add, Value 6), 19, 2, 0)
+testMonkeys[2] =! Monkey (2, [int64 79; int64 60; int64 97], OperationExpression (Multiply, Old), 13, 1, 3)
+testMonkeys[3] =! Monkey (3, [int64 74], OperationExpression (Add, Value 3), 17, 0, 1)
 
 
 let applyOperation (OperationExpression (operator, rhs)) old =
     let operand =
         match rhs with
         | Old -> old
-        | Value v -> bigint v
+        | Value v -> int64 v
     match operator with
     | Multiply -> operand * old
     | Add -> operand + old
@@ -121,9 +137,9 @@ let applyOperation (OperationExpression (operator, rhs)) old =
 let monkeyOneTurn (divideWorryBy:int) (Monkey (id:int, startingItems, operation, testDivisibleBy, throwToIdIfTrue, throwToIdIfFalse)) =
     match startingItems with
     | currentWorryLevel::remaining ->
-        let newWorryLevel = (applyOperation operation currentWorryLevel) / (bigint divideWorryBy)
+        let newWorryLevel = ((applyOperation operation currentWorryLevel) / (int64 divideWorryBy)) % divisorsCombined
         let throwTo =
-            if (newWorryLevel % (bigint testDivisibleBy)) = (bigint 0) then throwToIdIfTrue
+            if (newWorryLevel % (int64 testDivisibleBy)) = (int64 0) then throwToIdIfTrue
             else throwToIdIfFalse
         Some (throwTo, newWorryLevel, Monkey (id, remaining, operation, testDivisibleBy, throwToIdIfTrue, throwToIdIfFalse))
     | [] -> None
@@ -139,7 +155,7 @@ let monkeyTurns divideWorryBy monkey =
         (monkey, List.empty)
     |> Seq.map (fun (_, l) -> List.head l)
 
-let updateMonkeysAfterTurn (turnId:int) (turn:(int * bigint) seq) (monkeys:MonkeyNotes seq) =
+let updateMonkeysAfterTurn (turnId:int) (turn:(int * int64) seq) (monkeys:MonkeyNotes seq) =
     let newPositionMap = turn |> Seq.groupBy fst |> Seq.map (fun (id, items) -> (id, Seq.map snd items)) |> Map.ofSeq
     monkeys
     |> Seq.map (fun m ->
@@ -162,14 +178,15 @@ let updateMonkeysAfterTurn (turnId:int) (turn:(int * bigint) seq) (monkeys:Monke
 let testMonkeysAfterMonkey0Turn = List.ofSeq <| updateMonkeysAfterTurn 0 (monkeyTurns 3 testMonkeys[0]) testMonkeys
 let getMonkeyStartList (Monkey (_, sl, _,_,_,_)) = sl
 
-testMonkeysAfterMonkey0Turn[0] |> getMonkeyStartList =! []
-testMonkeysAfterMonkey0Turn[1] |> getMonkeyStartList =! [bigint 54; bigint 65; bigint 75; bigint 74]
-testMonkeysAfterMonkey0Turn[2] |> getMonkeyStartList =! [bigint 79; bigint 60; bigint 97]
-testMonkeysAfterMonkey0Turn[3] |> getMonkeyStartList =! [bigint 74; bigint 500; bigint 620]
+//testMonkeysAfterMonkey0Turn[0] |> getMonkeyStartList =! []
+//testMonkeysAfterMonkey0Turn[1] |> getMonkeyStartList =! [int64 54; int64 65; int64 75; int64 74]
+//testMonkeysAfterMonkey0Turn[2] |> getMonkeyStartList =! [int64 79; int64 60; int64 97]
+//testMonkeysAfterMonkey0Turn[3] |> getMonkeyStartList =! [int64 74; int64 500; int64 620]
 
 let getMonkeyId (Monkey (mid, _, _,_,_,_)) = mid
 
 let runOneTurn divideWorryBy monkeys =
+    //printf "runOneTurn: %d\n" (Seq.length monkeys)
     monkeys
     |> Seq.fold<MonkeyNotes, MonkeyNotes seq * Map<int, int>>
         (fun (state, inspectionCounts) m ->
@@ -187,39 +204,39 @@ let runOneTurn divideWorryBy monkeys =
         (monkeys, monkeys |> Seq.map (fun m -> (getMonkeyId m, 0)) |> Map.ofSeq)
     |> fun (m, ic) ->
         (
-            m,
+            m |> List.ofSeq,
             ic |> Map.toSeq |> Seq.sortBy fst |> Seq.map snd |> List.ofSeq
         )
 
-let testMonkeysAfterTurn1 = runOneTurn 3 testMonkeys |> fst |> List.ofSeq
-let testMonkeyInspectionsAfterTurn1 = runOneTurn 3 testMonkeys |> snd
+//let testMonkeysAfterTurn1 = runOneTurn 3 testMonkeys |> fst |> List.ofSeq
+//let testMonkeyInspectionsAfterTurn1 = runOneTurn 3 testMonkeys |> snd
 
-testMonkeysAfterTurn1[0] |> getMonkeyStartList =! [20I; 23I; 27I; 26I]
-testMonkeysAfterTurn1[1] |> getMonkeyStartList =! [2080I; 25I; 167I; 207I; 401I; 1046I]
-testMonkeysAfterTurn1[2] |> getMonkeyStartList =! []
-testMonkeysAfterTurn1[3] |> getMonkeyStartList =! []
-testMonkeyInspectionsAfterTurn1 =! [2; 4; 3; 5]
+//testMonkeysAfterTurn1[0] |> getMonkeyStartList =! [20I; 23I; 27I; 26I]
+//testMonkeysAfterTurn1[1] |> getMonkeyStartList =! [2080I; 25I; 167I; 207I; 401I; 1046I]
+//testMonkeysAfterTurn1[2] |> getMonkeyStartList =! []
+//testMonkeysAfterTurn1[3] |> getMonkeyStartList =! []
+//testMonkeyInspectionsAfterTurn1 =! [2; 4; 3; 5]
 
-// We don't get told the inspection counts after the first turn, so we can
-// only check which monkey holds what
-let testMonkeysAfterTurn2 = runOneTurn 3 testMonkeysAfterTurn1 |> fst |> List.ofSeq
-testMonkeysAfterTurn2[0] |> getMonkeyStartList =! [695I; 10I; 71I; 135I; 350I]
-testMonkeysAfterTurn2[1] |> getMonkeyStartList =! [43I; 49I; 58I; 55I; 362I]
-testMonkeysAfterTurn2[2] |> getMonkeyStartList =! []
-testMonkeysAfterTurn2[3] |> getMonkeyStartList =! []
+//// We don't get told the inspection counts after the first turn, so we can
+//// only check which monkey holds what
+//let testMonkeysAfterTurn2 = runOneTurn 3 testMonkeysAfterTurn1 |> fst |> List.ofSeq
+//testMonkeysAfterTurn2[0] |> getMonkeyStartList =! [695I; 10I; 71I; 135I; 350I]
+//testMonkeysAfterTurn2[1] |> getMonkeyStartList =! [43I; 49I; 58I; 55I; 362I]
+//testMonkeysAfterTurn2[2] |> getMonkeyStartList =! []
+//testMonkeysAfterTurn2[3] |> getMonkeyStartList =! []
 
-let testMonkeysAfterTurn3 = runOneTurn 3 testMonkeysAfterTurn2 |> fst |> List.ofSeq
-testMonkeysAfterTurn3[0] |> getMonkeyStartList =! [16; 18; 21; 20; 122]
-testMonkeysAfterTurn3[1] |> getMonkeyStartList =! [1468; 22; 150; 286; 739]
-testMonkeysAfterTurn3[2] |> getMonkeyStartList =! []
-testMonkeysAfterTurn3[3] |> getMonkeyStartList =! []
+//let testMonkeysAfterTurn3 = runOneTurn 3 testMonkeysAfterTurn2 |> fst |> List.ofSeq
+//testMonkeysAfterTurn3[0] |> getMonkeyStartList =! [16; 18; 21; 20; 122]
+//testMonkeysAfterTurn3[1] |> getMonkeyStartList =! [1468; 22; 150; 286; 739]
+//testMonkeysAfterTurn3[2] |> getMonkeyStartList =! []
+//testMonkeysAfterTurn3[3] |> getMonkeyStartList =! []
 
 
-let testMonkeysAfterTurn4 = runOneTurn 3 testMonkeysAfterTurn3 |> fst |> List.ofSeq
-testMonkeysAfterTurn4[0] |> getMonkeyStartList =! [491; 9; 52; 97; 248; 34]
-testMonkeysAfterTurn4[1] |> getMonkeyStartList =! [39; 45; 43; 258]
-testMonkeysAfterTurn4[2] |> getMonkeyStartList =! []
-testMonkeysAfterTurn4[3] |> getMonkeyStartList =! []
+//let testMonkeysAfterTurn4 = runOneTurn 3 testMonkeysAfterTurn3 |> fst |> List.ofSeq
+//testMonkeysAfterTurn4[0] |> getMonkeyStartList =! [491; 9; 52; 97; 248; 34]
+//testMonkeysAfterTurn4[1] |> getMonkeyStartList =! [39; 45; 43; 258]
+//testMonkeysAfterTurn4[2] |> getMonkeyStartList =! []
+//testMonkeysAfterTurn4[3] |> getMonkeyStartList =! []
 
 
 let getInspectionCounts divideWorryBy monkeys =
@@ -256,13 +273,17 @@ let getMonkeyBusinessPart2 n monkeys =
     |> Seq.ofList
     |> Seq.sortDescending
     |> Seq.take 2
-    |> Seq.fold (fun total n -> total * (bigint n)) (bigint 1)
+    |> Seq.fold (fun total n -> total * (int64 n)) (int64 1)
 
 //getMonkeyBusinessPart2 10000 testMonkeys =! 2713310158I
+let sw = new System.Diagnostics.Stopwatch ()
+sw.Start()
+printf "Part 2: %d\n" (getMonkeyBusinessPart2 10000 monkeys)
+sw.Stop()
+printf "%A\n\n" sw.Elapsed
 
-//for i in [1..200] do
-//    let sw = new System.Diagnostics.Stopwatch ()
-//    sw.Start()
-//    let _ = (getMonkeyBusinessPart2 i monkeys)
-//    sw.Stop()
-//    printf "%d: %A\n" i sw.Elapsed
+for i in [1..10] do
+    sw.Restart()
+    let _ = (getMonkeyBusinessPart2 (i*1000) monkeys)
+    sw.Stop()
+    printf "%d: %A\n" (i*1000) sw.Elapsed
