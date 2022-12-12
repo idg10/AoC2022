@@ -109,12 +109,15 @@ let findDistance heightMap startPos endPos =
 findDistance testHeightMap testStartPos testEndPos =! 31
 
 for m in (findPaths heightMap startPos) do
+    let sb = new System.Text.StringBuilder()
     printf "%d\n" System.Console.CursorTop
     System.Console.SetCursorPosition(0, 10)
-    for y in [0..((Array2D.length1 m) - 1)] do
+    for y in [0..((Array2D.length1 m) - 1)] do        
         for x in [0..((Array2D.length2 m) - 1)] do
-            printf "%3d " m[y, x]
-        printf "\n"
+            sb.AppendFormat("{0,4} ", m[y, x]) |> ignore
+            //printf "%3d " m[y, x]
+        System.Console.WriteLine(sb.ToString())
+        sb.Clear() |> ignore
 //    for y in [0..((Array2D.length1 m) - 2)] do
     printf "\n"
 
