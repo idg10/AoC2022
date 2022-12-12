@@ -122,3 +122,27 @@ for m in (findPaths heightMap startPos) do
     printf "\n"
 
 printf "Part 1: %d\n" (findDistance heightMap startPos endPos)
+
+let findStartingPositions heightMap =
+    [0..((Array2D.length2 heightMap) - 1)]
+    |> Seq.collect (fun y ->
+        [0..((Array2D.length1 heightMap) - 1)]
+        |> Seq.map
+            (fun x ->
+                match heightMap[x,y] with
+                | 'a' -> Some (x, y)
+                | _ -> None))
+    |> Seq.choose id
+
+printf "%A\n" (findStartingPositions testHeightMap |> List.ofSeq)
+
+let findShortestPath heightMap endPos =
+    let startps = findStartingPositions heightMap
+    startps
+    |> Seq.map (fun sp -> findDistance heightMap sp endPos)
+    |> Seq.min
+
+findShortestPath testHeightMap testEndPos =! 29
+
+printf "%A\n" (findStartingPositions heightMap |> List.ofSeq)
+printf "Part 2: %d\n" (findShortestPath heightMap endPos)
