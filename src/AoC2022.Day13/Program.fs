@@ -77,9 +77,17 @@ let parsePair = //<'a> : Parser<PacketEntry list * PacketEntry list, 'a> =
 testp parsePair """[9]
 [[8,7,6]]""" =! ([PacketItemSingle 9], [PacketItemNested [PacketItemSingle 8; PacketItemSingle 7; PacketItemSingle 6]])
 
-let parseInput = sepBy parsePair (newline >>. newline)
-let testPairs = testp parseInput testInput
-let pairs = testp parseInput input
+let parseInputAsPairs = sepBy parsePair (newline >>. newline)
+let testPairs = testp parseInputAsPairs testInput
+let pairs = testp parseInputAsPairs input
+let parseInputAsPackets input =
+    let listFromInput = (testp (sepBy parsePacketItems (many1 newline)) input)
+    List.concat [
+        listFromInput;
+        [[PacketItemNested [PacketItemSingle 2]]; [PacketItemNested [PacketItemSingle 6]]]
+    ]
+let testPackets = parseInputAsPackets testInput
+let packets = parseInputAsPackets input
 
 let rec comparePacketEntry (left: PacketEntry) (right: PacketEntry) =
     match left with
@@ -169,3 +177,35 @@ let getSumOfRightlyOrderedPairIndices pairs = getIndicesOfPairsInRightOrder pair
 getSumOfRightlyOrderedPairIndices testPairs =! 13
 
 printf "Part 1: %d\n" (getSumOfRightlyOrderedPairIndices pairs)
+
+let sortPackets packets =
+    packets
+    |> Seq.sortWith
+        (fun left right ->
+            match comparePair(left, right) with
+            | Some true -> -1
+            | Some false -> 1
+            | None -> 0)
+
+//printf "%A\n" (sortPackets testPackets |> List.ofSeq)
+
+let getDividerIndices packets =
+    sortPackets packets
+    |> Seq.mapi (fun i p -> (i + 1, p))
+    |> Seq.fold
+        (fun (idxOf2Marker, idxOf6Marker) (i, p) ->
+            match p with
+            | [PacketItemNested [PacketItemSingle 2]] -> (Some i, idxOf6Marker)
+            | [PacketItemNested [PacketItemSingle 6]] -> (idxOf2Marker, Some i)
+            | _ -> (idxOf2Marker, idxOf6Marker))
+        (None, None)
+
+let getDecoderKey packets =
+    match getDividerIndices packets with
+    | (Some m2i, Some m6i) -> m2i * m6i
+    | _ -> failwith "Did not find all markers"
+
+//printf "%A\n" (getDividerIndices testPackets)
+getDecoderKey testPackets =! 140
+
+printf "Part 2: %d\n" (getDecoderKey packets)
