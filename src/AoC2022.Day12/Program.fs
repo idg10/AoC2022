@@ -136,10 +136,19 @@ let findStartingPositions heightMap =
 
 printf "%A\n" (findStartingPositions testHeightMap |> List.ofSeq)
 
+let findDistanceOrNot heightMap startPos endPos =
+    let shortestDistancesOpt = findPaths heightMap startPos |> Seq.tryLast
+    let (endX, endY) = endPos
+    match shortestDistancesOpt with
+    | Some shortestDistances -> Some (shortestDistances[endX, endY] - 1)
+    | None -> None
+
 let findShortestPath heightMap endPos =
     let startps = findStartingPositions heightMap
     startps
-    |> Seq.map (fun sp -> findDistance heightMap sp endPos)
+    |> Seq.map (fun sp -> findDistanceOrNot heightMap sp endPos)
+    |> Seq.choose id
+    |> Seq.filter (fun x -> x > 0)
     |> Seq.min
 
 findShortestPath testHeightMap testEndPos =! 29
