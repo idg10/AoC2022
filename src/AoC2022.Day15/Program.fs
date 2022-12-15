@@ -39,15 +39,15 @@ let pSensor<'a> : Parser<Sensor, 'a> =
 
 let pSensors<'a> : Parser<Sensor list, 'a> = sepBy pSensor newline
 
-let testSensors = testp pSensors testInput
+let testSensors = testp pSensors testInput |> Array.ofSeq
 let input = getEmbeddedInput ()
-let sensors = testp pSensors input
+let sensors = testp pSensors input |> Array.ofSeq
 
 testSensors[0] =! Sensor ((2, 18), (-2, 15))
 testSensors[1] =! Sensor ((9, 16), (10, 16))
 testSensors[13] =! Sensor ((20, 1), (15, 3))
 
-let manhattanDistance (fromX, fromY) (toX, toY) =
+let inline manhattanDistance (fromX, fromY) (toX, toY) =
     (abs (toX - fromX)) + (abs (toY - fromY))
 
 manhattanDistance (0, 0) (10, 0) =! 10
@@ -67,6 +67,184 @@ let CellSensor = 'S'B
 [<Literal>]
 let CellNoBeacon = '#'B
 
+let populateRowForSensor (Sensor ((sX, sY), (bX, bY))) row xOffset (data:byte array) =
+    let arrLen = Array.length data
+    let width = arrLen + xOffset
+    let distance = manhattanDistance (sX, sY) (bX, bY)
+    // Sensors scan over a diamond thanks to the manhattan distancing. We want to
+    // work out how wide the slice of that diamond is at this row.
+    // If we're on the same row as the sensor, it's the full width. For every row
+    // away from the sensor position, it gets shorter by two.
+    // Instead of working with the full width, we'll just work out how far the
+    // sensor looks to one side, because we avoid the multiplications by two then
+    let rowsAwayFromSensor = abs (row - sY)
+    //printf "Sensor at %d,%d seeing %d,%d (distance %d) is %d away from this row\n" sX sY bX bY distance rowsAwayFromSensor
+    let distanceAtThisRow = distance - rowsAwayFromSensor
+    if distanceAtThisRow >= 0 then
+        let startX = max xOffset (sX - distanceAtThisRow)
+        let endX = min (width-1) (sX + distanceAtThisRow)
+        if endX >= startX then Array.fill data (startX - xOffset) (endX - startX + 1) CellNoBeacon
+        //for x = startX to endX do
+        //    if (data[x - xOffset] = CellEmpty) then
+        //        data[x - xOffset] <- CellNoBeacon
+    let sXi = sX - xOffset
+    let bXi = bX - xOffset
+    if (sY = row) && (sXi > 0) && (sXi < arrLen) then
+        data[sXi] <- CellSensor
+    if (bY = row) && (bXi > 0) && (bXi < arrLen) then
+        data[bXi] <- CellBeacon
+        
+let buildRowForSensors row xOffset (sensors:(Sensor array)) data =
+    for i = 0 to (sensors.Length-1) do
+        populateRowForSensor sensors[i] row xOffset data
+
+type Range = Range of firstIndex:int * lastIndex:int
+type Ranges = Ranges of ranges:Range list
+
+let combineTwoRanges r1 r2 =
+    let (Range (first1, last1)) = r1
+    let (Range (first2, last2)) = r2
+    if first1 <= first2 then
+        if last1 < (first2 - 1) then
+            // 1111 222
+            [r1;r2]
+        else if last1 > last2 then
+            // 1111111111111
+            //      222222
+            [r1]
+        else
+            // 11111111
+            //    222222222
+            // or
+            // 1111111
+            //        2222
+            [Range (first1, last2)]
+    else
+        if last2 < (first1 - 1) then
+            // 2222 1111
+            [r2;r1]
+        else if last2 > last1 then
+            // 222222222222
+            //     1111
+            [r2]
+        else
+            // 2222222
+            //   1111111
+            // or
+            // 2222222
+            //        11111
+            [Range (first2, last1)]
+
+    //if (last1 < first2) || (last2 < first1) then
+    //    [r1;r2]
+    //else if first1 < first2 then
+    //    (last1 last2 first1 first2) 
+
+
+combineTwoRanges (Range (1, 10)) (Range (12, 20)) =! [Range (1, 10); Range (12, 20)]
+combineTwoRanges (Range (1, 10)) (Range (11, 20)) =! [Range (1, 20)]
+combineTwoRanges (Range (1, 10)) (Range (6, 20)) =! [Range (1, 20)]
+combineTwoRanges (Range (1, 20)) (Range (6, 7)) =! [Range (1, 20)]
+combineTwoRanges (Range (1, 20)) (Range (6, 20)) =! [Range (1, 20)]
+combineTwoRanges (Range (1, 19)) (Range (6, 20)) =! [Range (1, 20)]
+combineTwoRanges (Range (3, 19)) (Range (1, 20)) =! [Range (1, 20)]
+combineTwoRanges (Range (3, 20)) (Range (1, 4)) =! [Range (1, 20)]
+combineTwoRanges (Range (3, 20)) (Range (1, 2)) =! [Range (1, 20)]
+combineTwoRanges (Range (3, 10)) (Range (1, 1)) =! [ Range (1, 1); Range (3, 10)]
+
+let combineRanges (Ranges ranges) newRange =
+    let (Range (newFirst, newLast)) = newRange
+    let (inserted, rs) =
+        Seq.foldBack
+            (fun r (aleadyInserted, list) ->
+                if aleadyInserted then
+                    (true, r::list)   // Already put the new item in place, so just reassembling the list now
+                else
+                    let (Range (currFirst, _)) = r
+                    if newFirst > currFirst then
+                        (true, r::newRange::list)
+                    else (false, r::list))
+            ranges
+            (false, [])
+    let rangesWithNewRangeInOrder =
+        if inserted then rs
+        else newRange::rs // If ranges was empty, or if the new range is before the entire list, the fold won't pick it up
+
+    Seq.unfold
+        (fun (processing, remaining) ->
+            match processing with
+            // Initially, processing will be empty. We want to move things
+            // out of input list into the processing list until we have two
+            // items.
+            | [] ->
+                match remaining with
+                | [] -> None
+                | i::tail -> Some (None, ([i], tail))
+
+            // If there's just one item in the processing list, we want
+            // to try to move a second one into the processing list, so that
+            // in the next iteration, we can attempt to combine them.
+            | p1::[] ->
+                match remaining with
+                // If there are no more to take, then we just have to move
+                // this item into the results
+                | [] ->  Some (Some p1, ([], []))
+                | i::tail -> Some (None, ([i;p1], tail))
+
+            // If we've got two items in the processing list, we want
+            // to attempt to combine them.
+            | [p1;p2] ->
+                let combined = combineTwoRanges p1 p2
+                match combined with
+                // If that successfully reduced the two items to one,
+                // we want to leave that reduced version on the processing list
+                | [p] -> Some (None, ([p], remaining))
+                // Reduction wasn't possible. Move the second item into the
+                // results, leaving the first one there to see if we can combine
+                // it with the next item
+                | _ -> Some (Some p2, ([p1], remaining))
+            | _ -> failwith "Invalid processing list"
+            )
+        ([], rangesWithNewRangeInOrder)
+    |> Seq.choose id
+    |> List.ofSeq
+    |> Ranges
+
+combineRanges (Ranges [Range (1, 4); Range (6, 10)]) (Range (3,8)) =! Ranges [Range (1, 10)]
+combineRanges (Ranges [Range (1, 4); Range (6, 10)]) (Range (5,8)) =! Ranges [Range (1, 10)]
+combineRanges (Ranges [Range (1, 4); Range (6, 10)]) (Range (5,5)) =! Ranges [Range (1, 10)]
+combineRanges (Ranges [Range (1, 4); Range (7, 10)]) (Range (6,8)) =! Ranges [Range (1, 4); Range (6, 10)]
+
+let buildRangeForSensor row (Sensor ((sX, sY), (bX, bY))) =
+    let distance = manhattanDistance (sX, sY) (bX, bY)
+    // Sensors scan over a diamond thanks to the manhattan distancing. We want to
+    // work out how wide the slice of that diamond is at this row.
+    // If we're on the same row as the sensor, it's the full width. For every row
+    // away from the sensor position, it gets shorter by two.
+    // Instead of working with the full width, we'll just work out how far the
+    // sensor looks to one side, because we avoid the multiplications by two then
+    let rowsAwayFromSensor = abs (row - sY)
+    //printf "Sensor at %d,%d seeing %d,%d (distance %d) is %d away from this row\n" sX sY bX bY distance rowsAwayFromSensor
+    let distanceAtThisRow = distance - rowsAwayFromSensor
+    if distanceAtThisRow >= 0 then
+        let startX = sX - distanceAtThisRow
+        let endX = sX + distanceAtThisRow
+        Some (Range (startX, endX))
+    else
+        None
+
+let buildRangesForSensors row (sensors:(Sensor array)) =
+    sensors
+    |> Seq.choose (buildRangeForSensor row)
+    |> Seq.fold combineRanges (Ranges [])
+
+let sb = new System.Text.StringBuilder()
+let printRow (row:(byte array)) =
+    sb.Clear() |> ignore
+    for c in row do
+        sb.Append(if c = 0uy then '.' else (char c)) |> ignore
+    System.Console.WriteLine(sb)
+
 type ScanDimensions = ScanDimensions of minX:int * min:int * maxY:int *  max:int
 type Grid = Grid of dimensions:ScanDimensions * windowFirst:int * windowLast:int * grid:Map<int*int,byte>
 
@@ -83,104 +261,52 @@ let getDimensions sensors =
 let testDimensions = getDimensions testSensors
 testDimensions =! ScanDimensions (-8, -10, 28, 26)  // Without manhattan distance (-2, -2, 25, 22)
 
-let makeGrid sensors windowFirst windowLast =
-    let dim = getDimensions sensors
-    let (ScanDimensions (minX, minY, maxX, maxY)) = dim
-    //let grid = Array2D.create (maxX - minX + 1) (maxY - minY + 1) CellEmpty
-    let grid =
-        sensors |>
-        Seq.fold
-            (fun (grid:Map<int*int,byte>) (Sensor ((sX, sY), (bX, bY))) ->
-                let withSensor =
-                    if ((sX >= windowFirst) && (sX <= windowLast)) && ((sY >= windowFirst) && (sY <= windowLast)) then
-                        grid.Add((sX - minX, sY - minY), CellSensor)
-                    else grid
-                if ((bX >= windowFirst) && (bX <= windowLast)) && ((bY >= windowFirst) && (bY <= windowLast)) then
-                    grid.Add((bX - minX, bY - minY), CellBeacon)
-                else grid)
-            Map.empty 
-    Grid (dim, windowFirst, windowLast, grid)
+let showGrid sensors xOffset =
+    let (ScanDimensions (_, _, maxX, maxY)) = getDimensions sensors
+    let result = Array.create maxX CellEmpty
+    for row in [0..maxY] do
+        Array.fill result 0 result.Length CellEmpty
+        buildRowForSensors row xOffset sensors result
+        printRow result
 
-// Get value at position in grid
-let g (Grid (ScanDimensions (minX, minY, _, _), _, _, grid)) x y =
-    match grid.TryFind((x - minX, y - minY)) with
-    | Some cell -> cell
-    | None -> CellEmpty
-
-// Set value at position in grid
-let ug grid x y value =
-    let (Grid (dim, windowFirstRow, windowLastRow, map)) = grid
-    if (y < windowFirstRow) || (y > windowLastRow) then grid
-    else
-        let (ScanDimensions (minX, minY, _, _)) = dim
-        let newMap = map.Add((x - minX, y - minY), value)
-        Grid (dim, windowFirstRow, windowLastRow, newMap)
-
-
-let sb = new System.Text.StringBuilder()
-let printGrid grid =
-    let (Grid (ScanDimensions (minX, minY, maxX, maxY), _, _ ,_)) = grid
-    sb.Clear() |> ignore
-    for y in [minY..maxY] do
-        for x in [minX..maxX] do
-            let c = g grid x y
-            sb.Append(if c = 0uy then '.' else (char c)) |> ignore
-        sb.AppendLine() |> ignore
-    System.Console.WriteLine(sb)
-
-let updateGridForSensor grid (Sensor ((sX, sY), (bX, bY))) =
-    printf "%A\n" (Sensor ((sX, sY), (bX, bY)))
-    let distance = manhattanDistance (sX, sY) (bX, bY)
-    let (Grid (ScanDimensions (minX, minY, maxX, maxY), windowFirstRow, windowLastRow,_)) = grid
-//    [(sY-distance)..(sY+distance)]
-    [windowFirstRow..windowLastRow]
-    |> Seq.collect (fun y -> [(sX-distance)..(sX+distance)] |> Seq.map (fun x -> (x, y)))
-    |> Seq.fold
-        (fun grid (x, y) ->
-            if (manhattanDistance (sX, sY) (x, y)) <= distance then
-                if (g grid x y) = CellEmpty then
-                    ug grid x y CellNoBeacon
-                else grid
-            else grid)
-        grid
-
-let testGrid = makeGrid testSensors 0 20
-let inputGrid = makeGrid sensors 0 4000000
-updateGridForSensor testGrid testSensors[6] |> printGrid
-
-let determineAllKnownNoSensorLocations grid sensors =
-    sensors
-    |> Seq.fold updateGridForSensor grid
-
-let findPossibleSensorLocation grid =
-    let (Grid (ScanDimensions (minX, minY, maxX, maxY), windowFirst, windowLast ,_)) = grid
-    [windowFirst..windowLast]
-    |> Seq.collect (fun y -> [windowFirst..windowLast] |> Seq.map (fun x -> (x, y)))
-    |> Seq.find (fun (x,y) -> (g grid x y) = CellEmpty)
-
-let getDistressTuningFrequency grid =
-    let (x, y) = findPossibleSensorLocation grid
-    (4000000*x) + y
-
-let populatedTestGrid = determineAllKnownNoSensorLocations testGrid testSensors
-
-printGrid populatedTestGrid
-getDistressTuningFrequency populatedTestGrid =! 56000011
-
-let getNonBeaconPositionsForRow grid row =
-    let (Grid (ScanDimensions (minX, _, maxX, _), _, _, _)) = grid
-    [minX..maxX]
-    |> Seq.filter (fun x ->
-        match (g grid x row) with
-        | CellNoBeacon | CellSensor -> true
-        | _ -> false)
-    |> Seq.length
-
+showGrid testSensors -10
 printf "\n"
-printGrid populatedTestGrid
-getNonBeaconPositionsForRow populatedTestGrid 10 =! 26
+showGrid testSensors 0
 
-let populatedGrid = determineAllKnownNoSensorLocations inputGrid sensors
+let countNonBeacons (margin:int) row sensors =
+    let (ScanDimensions (_, _, maxX, maxY)) = getDimensions sensors
+    let rowData = Array.create (maxX + 2 * margin) CellEmpty
+    buildRowForSensors row (-margin) sensors rowData
+    //printf "countNonBeacons for\n"
+    //printRow rowData
+    rowData |> Seq.filter (fun c -> c = CellNoBeacon) |> Seq.length
+    
+countNonBeacons 15 10 testSensors =! 26
+printf "\n"
+printf "Part 1: %d\n" (countNonBeacons 2000000 2000000 sensors)
+printf "\n"
 
-printf "Part 1: %d\n" (getNonBeaconPositionsForRow populatedGrid 2000000)
-printf "Part 2: %d\n" (getDistressTuningFrequency populatedGrid)
+let findPossibleSensorLocation sensors windowSize =
+    //let (Grid (ScanDimensions (minX, minY, maxX, maxY), windowFirst, windowLast ,_)) = grid
+    let data = Array.create windowSize CellEmpty
+    [0..(windowSize-1)]
+    |> Seq.choose (fun row ->
+        if (row % 100000 = 0) then
+            printf "Row: %d\n" row
+        let (Ranges ranges) = buildRangesForSensors row sensors
+        match ranges with
+        // Typically we expect a single range filling the whole window
+        | Range (rFirst, rLast)::rest ->
+            if (rFirst > 0) then Some (0, row)
+            else if (rLast < (windowSize - 1)) then Some (rLast + 1, row)
+            else None
+        | [] -> failwith "Unexpected complete lack of data!")
+    |> Seq.head
+        
+
+let getDistressTuningFrequency sensors windowSize =
+    let (x, y) = findPossibleSensorLocation sensors windowSize
+    (4000000L * (int64 x)) + (int64 y)
+
+getDistressTuningFrequency testSensors 20 =! 56000011
+printf "Part 2: %d\n" (getDistressTuningFrequency sensors 4000000)
