@@ -68,7 +68,7 @@ let CellSensor = 'S'B
 let CellNoBeacon = '#'B
 
 type ScanDimensions = ScanDimensions of minX:int * min:int * maxY:int *  max:int
-type Grid = Grid of dimensions:ScanDimensions * windowRow:int * grid:Map<int*int,byte>
+type Grid = Grid of dimensions:ScanDimensions * windowFirst:int * windowLast:int * grid:Map<int*int,byte>
 
 let getDimensions sensors =
     sensors
@@ -83,7 +83,7 @@ let getDimensions sensors =
 let testDimensions = getDimensions testSensors
 testDimensions =! ScanDimensions (-8, -10, 28, 26)  // Without manhattan distance (-2, -2, 25, 22)
 
-let makeGrid sensors windowRow =
+let makeGrid sensors windowFirst windowLast =
     let dim = getDimensions sensors
     let (ScanDimensions (minX, minY, maxX, maxY)) = dim
     //let grid = Array2D.create (maxX - minX + 1) (maxY - minY + 1) CellEmpty
@@ -92,32 +92,34 @@ let makeGrid sensors windowRow =
         Seq.fold
             (fun (grid:Map<int*int,byte>) (Sensor ((sX, sY), (bX, bY))) ->
                 let withSensor =
-                    if (sY = windowRow) then grid.Add((sX - minX, sY - minY), CellSensor)
+                    if ((sX >= windowFirst) && (sX <= windowLast)) && ((sY >= windowFirst) && (sY <= windowLast)) then
+                        grid.Add((sX - minX, sY - minY), CellSensor)
                     else grid
-                if (bY = windowRow) then grid.Add((bX - minX, bY - minY), CellBeacon)
+                if ((bX >= windowFirst) && (bX <= windowLast)) && ((bY >= windowFirst) && (bY <= windowLast)) then
+                    grid.Add((bX - minX, bY - minY), CellBeacon)
                 else grid)
             Map.empty 
-    Grid (dim, windowRow, grid)
+    Grid (dim, windowFirst, windowLast, grid)
 
 // Get value at position in grid
-let g (Grid (ScanDimensions (minX, minY, _, _), _, grid)) x y =
+let g (Grid (ScanDimensions (minX, minY, _, _), _, _, grid)) x y =
     match grid.TryFind((x - minX, y - minY)) with
     | Some cell -> cell
     | None -> CellEmpty
 
 // Set value at position in grid
 let ug grid x y value =
-    let (Grid (dim, windowRow, map)) = grid
-    if y <> windowRow then grid
+    let (Grid (dim, windowFirstRow, windowLastRow, map)) = grid
+    if (y < windowFirstRow) || (y > windowLastRow) then grid
     else
         let (ScanDimensions (minX, minY, _, _)) = dim
         let newMap = map.Add((x - minX, y - minY), value)
-        Grid (dim, windowRow, newMap)
+        Grid (dim, windowFirstRow, windowLastRow, newMap)
 
 
 let sb = new System.Text.StringBuilder()
 let printGrid grid =
-    let (Grid (ScanDimensions (minX, minY, maxX, maxY), _ ,_)) = grid
+    let (Grid (ScanDimensions (minX, minY, maxX, maxY), _, _ ,_)) = grid
     sb.Clear() |> ignore
     for y in [minY..maxY] do
         for x in [minX..maxX] do
@@ -129,9 +131,9 @@ let printGrid grid =
 let updateGridForSensor grid (Sensor ((sX, sY), (bX, bY))) =
     printf "%A\n" (Sensor ((sX, sY), (bX, bY)))
     let distance = manhattanDistance (sX, sY) (bX, bY)
-    let (Grid (ScanDimensions (minX, minY, maxX, maxY), windowRow ,_)) = grid
+    let (Grid (ScanDimensions (minX, minY, maxX, maxY), windowFirstRow, windowLastRow,_)) = grid
 //    [(sY-distance)..(sY+distance)]
-    [windowRow]
+    [windowFirstRow..windowLastRow]
     |> Seq.collect (fun y -> [(sX-distance)..(sX+distance)] |> Seq.map (fun x -> (x, y)))
     |> Seq.fold
         (fun grid (x, y) ->
@@ -142,19 +144,31 @@ let updateGridForSensor grid (Sensor ((sX, sY), (bX, bY))) =
             else grid)
         grid
 
-let testGrid = makeGrid testSensors 10
-let inputGrid = makeGrid sensors 2000000
+let testGrid = makeGrid testSensors 0 20
+let inputGrid = makeGrid sensors 0 4000000
 updateGridForSensor testGrid testSensors[6] |> printGrid
 
 let determineAllKnownNoSensorLocations grid sensors =
     sensors
     |> Seq.fold updateGridForSensor grid
 
+let findPossibleSensorLocation grid =
+    let (Grid (ScanDimensions (minX, minY, maxX, maxY), windowFirst, windowLast ,_)) = grid
+    [windowFirst..windowLast]
+    |> Seq.collect (fun y -> [windowFirst..windowLast] |> Seq.map (fun x -> (x, y)))
+    |> Seq.find (fun (x,y) -> (g grid x y) = CellEmpty)
+
+let getDistressTuningFrequency grid =
+    let (x, y) = findPossibleSensorLocation grid
+    (4000000*x) + y
 
 let populatedTestGrid = determineAllKnownNoSensorLocations testGrid testSensors
 
+printGrid populatedTestGrid
+getDistressTuningFrequency populatedTestGrid =! 56000011
+
 let getNonBeaconPositionsForRow grid row =
-    let (Grid (ScanDimensions (minX, _, maxX, _), _, _)) = grid
+    let (Grid (ScanDimensions (minX, _, maxX, _), _, _, _)) = grid
     [minX..maxX]
     |> Seq.filter (fun x ->
         match (g grid x row) with
@@ -169,3 +183,4 @@ getNonBeaconPositionsForRow populatedTestGrid 10 =! 26
 let populatedGrid = determineAllKnownNoSensorLocations inputGrid sensors
 
 printf "Part 1: %d\n" (getNonBeaconPositionsForRow populatedGrid 2000000)
+printf "Part 2: %d\n" (getDistressTuningFrequency populatedGrid)
