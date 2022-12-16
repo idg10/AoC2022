@@ -164,27 +164,34 @@ printf "Non-branching in input data %d\n" (countNonBranchingLocations sites)
 type SummarizedNetwork =
     SummarizedNetwork
         // Key is (startName, endName), and the value is all the ValveSites in that chain
-        of chains:Map<string * string, Set<ValveSite>>
+        of chains:Map<string * string, Set<string>>
         * complexSites:ValveSite list
 
-let summarizeNetwork sites =
+let summarizeNetwork (sites:ValveSite list) =
     sites
     |> Seq.fold
         (fun summarizedNetwork valveSite ->
             let addUnidirectionalChainElement fromValve toValve (SummarizedNetwork (chains, complexSites)) =
-                // There's a problem with this. There might be two entries matching that tryFind, and
-                // we want to process both. But if there are none, we want the behaviour from the None
-                // case below
-                match (Map.keys chains |> Seq.filter (fun (k1, k2) -> (toValve = k1) || (fromValve = k2)) |> List.ofSeq) with
+                let matchingKeys =
+                    chains
+                    |> Map.keys
+                    |> Seq.filter (fun (k1, k2) ->
+                        (toValve = k1) || (fromValve = k2)
+                        //&& (not ((toValve = k1) && (fromValve = k2))))
+                        )
+                    |> List.ofSeq
+                //match (Map.keys chains |> Seq.filter (fun (k1, k2) -> (toValve = k1)  (fromValve = k2)) |> List.ofSeq) with
+                match matchingKeys with
                 | [] ->
                     SummarizedNetwork (
-                        chains |> Map.add (fromValve, toValve) (Set.singleton valveSite),
+                        chains |> Map.add (fromValve, toValve) (Set.ofList [fromValve; toValve]),
                         complexSites)
                 | keys ->
                     keys
                     |> Seq.fold
                         (fun (SummarizedNetwork (chains, complexSites)) (k1, k2) ->
                             let chainMembers = chains[(k1, k2)]
+                            let before = k1 = toValve
                             // EE [FF; DD]:
                             //  (EE,FF): EE -> FF; (EE,DD): EE -> DD
                             // FF [EE; GG]
@@ -194,21 +201,29 @@ let summarizeNetwork sites =
                             // HH [GG]
                             //  (EE,HH): EE -> FF -> GG -> HH; (HH,DD): HH -> GG -> FF -> EE -> DD
                             
-                            // TODO:
-                            //if Set.contains valveSite chainMembers then
-                            //    // This is pointer back up the chain, so don't try to add this. 
-                            let updatedChain = chainMembers |> Set.add valveSite
-                            let chainsExceptThis = Map.remove (k1, k2) chains
-                            let updatedMap =
-                                if k1 = toValve then
-                                    // This site extends the start of the chain
-                                    // fromValve..k1/toValve..(chain)..k2
-                                    chainsExceptThis |> Map.add (fromValve, k2) updatedChain
-                                else
-                                    // This site extends the end of the chain
-                                    // k1..(chain)..k2/fromValve..toValve
-                                    chainsExceptThis |> Map.add (k1, toValve) updatedChain
-                            SummarizedNetwork (updatedMap, complexSites))
+                            //if (Set.contains valveSite chainMembers)
+                            //    || (before && (fromValve = k2))
+                            //    || ((not before) && (toValve = k1)) then
+                            if (before && ((fromValve = k2)
+                                           || chainMembers |> Set.contains fromValve))
+                                || ((not before) && ((toValve = k1)
+                                        || chainMembers |> Set.contains toValve)) then
+                                // This is pointer back up the chain, so don't try to add this.
+                                SummarizedNetwork (chains, complexSites)
+                            else
+                                let chainsExceptThis = Map.remove (k1, k2) chains
+                                let updatedMap =
+                                    if before then
+                                        let updatedChain = chainMembers |> Set.add fromValve
+                                        // This site extends the start of the chain
+                                        // fromValve..k1/toValve..(chain)..k2
+                                        chainsExceptThis |> Map.add (fromValve, k2) updatedChain
+                                    else
+                                        let updatedChain = chainMembers |> Set.add toValve
+                                        // This site extends the end of the chain
+                                        // k1..(chain)..k2/fromValve..toValve
+                                        chainsExceptThis |> Map.add (k1, toValve) updatedChain
+                                SummarizedNetwork (updatedMap, complexSites))
                         (SummarizedNetwork (chains, complexSites))
 
             match valveSite with
@@ -224,3 +239,9 @@ let summarizeNetwork sites =
         (SummarizedNetwork (Map.empty, []))
 
 printf "Test summarized: %A\n" (summarizeNetwork testSites)
+
+let summarized = (summarizeNetwork sites)
+printf "Sites summarized: %A\n" summarized
+
+// 10 complex sites and 50 connecting sequences.
+// 
