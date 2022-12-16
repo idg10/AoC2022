@@ -150,3 +150,77 @@ printf "All lobes: %A\n" (findAllLobesForTermini termini waysIn |> List.ofSeq)
 // What if, instead, we looked for lines (of which lobes are a special case)? Just look for non-branching
 // node sequences?
 // There might be a relatively small number of clusters joined mostly by lines.
+
+let countNonBranchingLocations (sites:ValveSite list) =
+    sites
+    |> Seq.filter (fun (ValveSite (valve, _, tunnels)) -> (Seq.length tunnels) <= 2)
+    |> Seq.length
+
+printf "Non-branching in test data %d\n" (countNonBranchingLocations testSites)
+printf "Non-branching in input data %d\n" (countNonBranchingLocations sites)
+
+// Aha! 47 of my inputs are non-branching.
+
+type SummarizedNetwork =
+    SummarizedNetwork
+        // Key is (startName, endName), and the value is all the ValveSites in that chain
+        of chains:Map<string * string, Set<ValveSite>>
+        * complexSites:ValveSite list
+
+let summarizeNetwork sites =
+    sites
+    |> Seq.fold
+        (fun summarizedNetwork valveSite ->
+            let addUnidirectionalChainElement fromValve toValve (SummarizedNetwork (chains, complexSites)) =
+                // There's a problem with this. There might be two entries matching that tryFind, and
+                // we want to process both. But if there are none, we want the behaviour from the None
+                // case below
+                match (Map.keys chains |> Seq.filter (fun (k1, k2) -> (toValve = k1) || (fromValve = k2)) |> List.ofSeq) with
+                | [] ->
+                    SummarizedNetwork (
+                        chains |> Map.add (fromValve, toValve) (Set.singleton valveSite),
+                        complexSites)
+                | keys ->
+                    keys
+                    |> Seq.fold
+                        (fun (SummarizedNetwork (chains, complexSites)) (k1, k2) ->
+                            let chainMembers = chains[(k1, k2)]
+                            // EE [FF; DD]:
+                            //  (EE,FF): EE -> FF; (EE,DD): EE -> DD
+                            // FF [EE; GG]
+                            //  (EE,GG): EE -> FF -> GG; (FF,DD): FF -> EE -> DD
+                            // GG [FF;HH]
+                            //  (EE,HH): EE -> FF -> GG -> HH; (GG,DD): GG -> FF -> EE -> DD
+                            // HH [GG]
+                            //  (EE,HH): EE -> FF -> GG -> HH; (HH,DD): HH -> GG -> FF -> EE -> DD
+                            
+                            // TODO:
+                            //if Set.contains valveSite chainMembers then
+                            //    // This is pointer back up the chain, so don't try to add this. 
+                            let updatedChain = chainMembers |> Set.add valveSite
+                            let chainsExceptThis = Map.remove (k1, k2) chains
+                            let updatedMap =
+                                if k1 = toValve then
+                                    // This site extends the start of the chain
+                                    // fromValve..k1/toValve..(chain)..k2
+                                    chainsExceptThis |> Map.add (fromValve, k2) updatedChain
+                                else
+                                    // This site extends the end of the chain
+                                    // k1..(chain)..k2/fromValve..toValve
+                                    chainsExceptThis |> Map.add (k1, toValve) updatedChain
+                            SummarizedNetwork (updatedMap, complexSites))
+                        (SummarizedNetwork (chains, complexSites))
+
+            match valveSite with
+            | ValveSite (Valve valve, _, [Valve t1; Valve t2]) ->
+                summarizedNetwork
+                |> addUnidirectionalChainElement valve t1
+                |> addUnidirectionalChainElement valve t2
+            | ValveSite (Valve valve, _, [Valve t1]) ->
+                addUnidirectionalChainElement valve t1 summarizedNetwork
+            | _ ->
+                let (SummarizedNetwork (chains, complexSites)) = summarizedNetwork
+                SummarizedNetwork (chains, valveSite::complexSites))
+        (SummarizedNetwork (Map.empty, []))
+
+printf "Test summarized: %A\n" (summarizeNetwork testSites)
