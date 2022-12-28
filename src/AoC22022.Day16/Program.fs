@@ -67,6 +67,9 @@ testSites[9] =! ValveSite (Valve "JJ", 21, [Valve "II"])
 //  v       v
 //  CC2 -> DD20 <-> EE3 <-> FF0 <-> GG0 <-> HH22
 //
+// Optimum:
+// AA, DD, O, CC, BB, O, AA, II, JJ, O, II, AA, DD, EE, FF, GG, HH, O, GG, FF, EE, O, DD, CC, O
+//
 // Roughly speaking, there's a 'central' cycle featuring AA, BB, CC, and DD, and then
 // we have two simple linear paths from this cluster heading out to JJ and HH.
 // I'm calling those things "lobes". The thing that makes them interesting is the limited
@@ -110,7 +113,6 @@ let getWaysInMap (sites:ValveSite list) =
         Map.empty
 
 let testWaysIn = getWaysInMap testSites
-//printf "%A\n" testWaysIn
 let waysIn = getWaysInMap sites
 
 let findTermini (waysIn:Map<string, string list>) =
@@ -119,9 +121,7 @@ let findTermini (waysIn:Map<string, string list>) =
     |> Seq.filter (fun (_, waysIn) -> (List.length waysIn) = 1)
 
 let testTermini = findTermini testWaysIn
-//printf "%A\n" (testTermini |> List.ofSeq)
 let termini = findTermini waysIn
-printf "%A\n" (termini |> List.ofSeq)
 
 let findLobeFor terminus (waysIn:Map<string, string list>) =
     Seq.unfold
@@ -179,11 +179,6 @@ type SummarizedNetwork =
         * complexSites:Map<string, ValveSite>
         * allSize:Map<string, ValveSite>
 
-// TODO: I think the attempt here to build up the chainsByStart as we go doesn't work
-// because we rewrite the chains as we go, meaning that we end up with chainsByStart
-// entries that will ultimately be wrong.
-// So it would be simpler to build up the chains first, then derive the chainsByStart
-// from it.
 let summarizeNetwork (sites:ValveSite list) =
     let (SummarizedNetwork (chains, _, complexSites, allSites)) =
         sites
@@ -194,11 +189,8 @@ let summarizeNetwork (sites:ValveSite list) =
                         chains
                         |> Map.keys
                         |> Seq.filter (fun (k1, k2) ->
-                            (toValve = k1) || (fromValve = k2)
-                            //&& (not ((toValve = k1) && (fromValve = k2))))
-                            )
+                            (toValve = k1) || (fromValve = k2))
                         |> List.ofSeq
-                    //match (Map.keys chains |> Seq.filter (fun (k1, k2) -> (toValve = k1)  (fromValve = k2)) |> List.ofSeq) with
                     match matchingKeys with
                     | [] ->
                         SummarizedNetwork (
@@ -756,8 +748,6 @@ let initialLocation = LocationInBreadthSearch ([PathMoveStep "AA"], Set.empty, 0
 let candidateNextLocations network currentLocation =
     let (SummarizedNetwork (_, _, _, sites)) = network
     let (LocationInBreadthSearch (currentReversedPath, openValves, score)) = currentLocation
-    if (List.rev currentReversedPath) = [PathMoveStep "AA";PathMoveStep "DD";PathOpenStep;PathMoveStep "CC";PathMoveStep "BB";PathOpenStep;PathMoveStep "AA";PathMoveStep "II";PathMoveStep "JJ"; PathOpenStep;PathMoveStep "II";PathMoveStep "AA";PathMoveStep "DD"] then
-        printf "Found it!\n"
     let currentPositionName = currentPositionNameFromReversedPath currentReversedPath
     match sites |> Map.tryFind currentPositionName with
     | Some (ValveSite (_, flowRate, tunnels)) ->
@@ -977,6 +967,7 @@ let reduceCandidatesToSingleBest candidates =
                         let (betterEntryExists, updatedIndicesToExclude) =
                             allCandidatesLeadingHere
                             |> Seq.mapi (fun i v -> (i, v))
+                            |> Seq.skip firstIndex
                             |> Seq.fold
                                 (fun (alreadyFoundBetterEntry:bool, indicesToExclude:Set<int>) (secondIndex:int, secondCandidate:LocationInBreadthSearch) ->
                                     if alreadyFoundBetterEntry then
@@ -1100,18 +1091,18 @@ let displayLocation (LocationInBreadthSearch (reversedPath, openValves, score)) 
 
 let solvePart1 summarized =
     for locations in ((walkNetwork summarized) |> Seq.take 30) do
-        let sortedLocations =
-            locations
-            |> Seq.sortBy
-                (fun (LocationInBreadthSearch (reversedPath, _,_)) ->
-                    Seq.rev reversedPath
-                    |> Seq.map (fun p ->
-                        match p with
-                        | PathOpenStep -> " "
-                        | PathMoveStep l -> l)
-                    |> List.ofSeq)
-        for location in sortedLocations do
-            printf "%s\n" (displayLocation location)
+        //let sortedLocations =
+        //    locations
+        //    |> Seq.sortBy
+        //        (fun (LocationInBreadthSearch (reversedPath, _,_)) ->
+        //            Seq.rev reversedPath
+        //            |> Seq.map (fun p ->
+        //                match p with
+        //                | PathOpenStep -> " "
+        //                | PathMoveStep l -> l)
+        //            |> List.ofSeq)
+        //for location in sortedLocations do
+        //    printf "%s\n" (displayLocation location)
         printf "Max: %d\n" (locations |> Seq.map (fun (LocationInBreadthSearch (_,_,score)) -> score) |> Seq.max)
         printf "  %A\n\n" (locations |> Seq.maxBy (fun (LocationInBreadthSearch (_,_,score)) -> score) |> displayLocation)
 
