@@ -42,21 +42,7 @@ let sites = testp pValveSites input
 testSites[0] =! ValveSite (Valve "AA", 0, [Valve "DD"; Valve "II"; Valve "BB"])
 testSites[9] =! ValveSite (Valve "JJ", 21, [Valve "II"])
 
-// It's like the travelling salesman problem, except the cost is the same for every trip.
-// The Held-Karp algorithm can solve this in O(n²2ⁿ). Our input is of size 57, so that
-// 2⁵⁷ is going to destroy us. We must be able to take advantage of the fact that the
-// cost of travel is uniform to reduce this to a simpler problem.
-
-// Is it relevant that the example sequence shown is not the optimal path? It solves
-// the problem of maximising flow by by opening all the valves that can be opened,
-// but in this short example there are several ways to do it. They take 25 minutes (24
-// steps) to get there. It's actually possible to do it in 18 minutes (17 steps):
-// AA->II->JJ->open->II->AA->BB->open->CC->open->DD->open->EE->open->FF->GG->HH->open
-// On the face of it, the example has simply solved a much easier problem, and is
-// therefore not of much relevance. But is this a clue? Not sure.
-
-// Could we simplify our map into lobes? With the example problem, we have this sort
-// of shape:
+// Here's how the test input looks:
 //
 //  /-->  AA0 <-> II0 <-> JJ21
 //  |       ^
@@ -71,11 +57,80 @@ testSites[9] =! ValveSite (Valve "JJ", 21, [Valve "II"])
 // AA, DD, O, CC, BB, O, AA, II, JJ, O, II, AA, DD, EE, FF, GG, HH, O, GG, FF, EE, O, DD, CC, O
 // Or just the openings:
 // DD20, BB13, JJ21, HH22, EE3, CC2
+
+// It's like the travelling salesman problem, except the cost is the same for every trip.
+// The Held-Karp algorithm can solve this in O(n²2ⁿ). Our input is of size 57, so that
+// 2⁵⁷ is going to destroy us. We must be able to take advantage of the fact that the
+// cost of travel is uniform to reduce this to a simpler problem.
+
+// Is it relevant that the example sequence shown is not the optimal path? It solves
+// the problem of maximising flow by by opening all the valves that can be opened,
+// but in this short example there are several ways to do it. They take 25 minutes (24
+// steps) to get there. It's actually possible to do it in 18 minutes (17 steps):
+// AA->II->JJ->open->II->AA->BB->open->CC->open->DD->open->EE->open->FF->GG->HH->open
+// On the face of it, the example has simply solved a much easier problem, and is
+// therefore not of much relevance. But is this a clue? Not sure.
+
+// Update: actually, it's not the travelling salesman problem, because the goal isn't
+// just to visit all sites. My "better" solution does this:
+//   27*JJ + 23*BB + 21*CC + 19*DD + 17*EE + 13*HH
+// = 27*21 + 23*13 + 21*2  + 19*20 + 17*3  + 13*22
+// = 567   + 299   + 42    + 380   + 51    + 286
+// = 1625
+// But the example sequence shown produces 1651. So although my path is shorter, theirs
+// produces a higher score. How does it do that? Let's look at their sequence:
+//  AA,DD,O,CC,BB,O,AA,II,JJ,O,II,AA,DD,EE,FF,GG,HH,O,GG,FF,EE,O,DD,CC,O
+//   28*DD + 25*BB + 21*JJ + 13*HH + 10*EE + 7*C
+// = 28*20 + 25*13 + 21*21 + 13*22 + 9*3  + 6*2
+// = 560   + 325   + 441   + 286   + 27   + 12
+// = 1651
 //
-// Roughly speaking, there's a 'central' cycle featuring AA, BB, CC, and DD, and then
-// we have two simple linear paths from this cluster heading out to JJ and HH.
-// I'm calling those things "lobes". The thing that makes them interesting is the limited
-// branching. There are basically two things you can do with a lobe:
+// There are some surprising features of this sequence:
+//  * it goes through CC twice but only opens it on the second visit!
+//  * same for EE
+//  * it goes all the way into a long cul de sac of DD,EE,FF,GG,HH, opens HH, then
+//      retraces its steps all the way back up just so it can come back and open CC
+//  * it prioritises DD (20) over JJ (21)
+//
+// These seem counterintuitive. If you're going to open a valve, why delay? The longer
+// it's open, the more total pressure release you get. Why wouldn't you that trip
+// out to the most distant node, HH, the last thing you did so you didn't have to
+// spend all that time retracing your steps? Why wouldn't you open the highest value
+// at the earliest opportunity.
+//
+// The first point is that the upside from getting to a high-value valve earlier can be
+// greater than the downsides of not opening all valves as you're passing through. For
+// example, My solution gets CC open early enough that it remains open 21 minutes,
+// producing a total release of 42. The optimal path actually reaches CC earlier, and
+// could have had it open for 26 minutes, which would have given a total of 52. But by
+// skipping its first opportunity to open CC, the optimal path gets BB, JJ, HH, and EE
+// open one step earlier than would be the case if CC had been opened earlier. That adds
+// 13+21+22+3 = 59. Since bringing these four forward by just one step produces a gain of 59,
+// and the total we could have got by opening CC earlier was just 52, the wins from
+// skipping over CC outweigh the gain. (And the optimal path does eventually get CC open,
+// for a total of 12, so the gain from opening earlier would have been just 40, compared
+// against the gains of 59 from opening all those other valves one step sooner.)
+//
+// This then leaves the question of why the optimal solution doesn't appear to prioritise
+// the highest value nodes in all cases. The highest flow rate node is JJ, at 21. My
+// solution gets this open first, so it gets 27 minutes. The optimal solution has it
+// open for just 21 minutes. Given that we've just seen how useful it can be to defer
+// lower-valued nodes in order to get higher-values ones open sooner, why does it leave
+// JJ for so long? This is more subtle. By sacrifing potential output from JJ, the
+// optimal path is able to open DD and BB earlier. It gets DD open for 9 minutes longer
+// than mine, giving 180 more points, which offsets the fact that it has JJ open for
+// 6 minutes fewer, which turns out to lose it only 126 points. So that's clearly
+// a worthwhile trade. So it's not as simple as getting the highest value valve open
+// as early as possible. You want to get many high value valves open as early as you can,
+// which is a fuzzier goal.
+
+
+// One approach I intially considered was to simplify our map into lobes. Looking at
+// the visualization of the example problem above, roughly speaking there's a 'central'
+// cycle featuring AA, BB, CC, and DD, and two simple linear paths from this cluster
+// heading out to JJ and HH. I'm calling those things "lobes". The thing that makes
+// them interesting is the limited branching. There are basically two things you can do
+// with a lobe:
 //  1. go down it and come back up
 //  2. go down it and never return
 // (It's possible to imagine "terminal lobes" that permit only 2. The simple example
@@ -85,71 +140,14 @@ testSites[9] =! ValveSite (Valve "JJ", 21, [Valve "II"])
 // extreme, so it seems plausible that the optimal route might entail leaving the longest
 // lobe until last, so that you can avoid the cost of heading down it and back.
 //
-// So how might we recognize these lobes? We could try to find the termini, and then
-// work our way back up. JJ is a terminus because it has only one way in, from II.
-// II's only ways in are from the terminus (JJ) or from AA, so if the node that provides
-// a way into a terminus has only one other way in, we can say it forms part of a lobe.
+// What I should have spotted is that the optimal solution didn't actually do what my
+// solution did: the optimal solution actually went all the way down the longest lobe
+// and then all the way back again so that it could finally open CC, a valve it had
+// already been through. So in practice, knowing about these 'lobes' isn't useful in
+// in practice. Unfortunately, before I worked that out, I wrote code that inspected
+// the map to work out where the lobes were.
 //
-// So:
-//  1. find all termini
-//  2. for each terminus, iterate back:
-//      find nodes that point to the current node
-//      if we found only one, that's part of the lobe, repeat
-//      if we found more than one, none of them is part of a lobe
-
-// To do this, we need to be able to ask for any node "what are the routes into this node?"
-// So we want a Map<Node, Node>
-let getWaysInMap (sites:ValveSite list) =
-    sites
-    |> Seq.fold
-        (fun (m:Map<string, string list>) (ValveSite (Valve vFrom, _, tunnels)) ->
-            tunnels
-            |> Seq.fold
-                (fun m (Valve vTo) ->
-                    let routesIn =
-                        match (Map.tryFind vTo m) with
-                        | Some froms -> vFrom::froms
-                        | None -> [vFrom]
-                    Map.add vTo routesIn m)
-                m)
-        Map.empty
-
-let testWaysIn = getWaysInMap testSites
-let waysIn = getWaysInMap sites
-
-let findTermini (waysIn:Map<string, string list>) =
-    waysIn
-    |> Map.toSeq
-    |> Seq.filter (fun (_, waysIn) -> (List.length waysIn) = 1)
-
-let testTermini = findTermini testWaysIn
-let termini = findTermini waysIn
-
-let findLobeFor terminus (waysIn:Map<string, string list>) =
-    Seq.unfold
-        (fun (currentValve, whereWeJustCameFrom) ->
-            match Map.find currentValve waysIn with
-            | [single] -> Some (single, (single, currentValve))
-            | [w1; w2] ->
-                if w1 = whereWeJustCameFrom then
-                    Some (w2, (w2, currentValve))
-                else
-                   Some (w1, (w1, currentValve))
-            | _ -> None)
-        (terminus, terminus)
-
-printf "Lobe for JJ %A\n" (findLobeFor "JJ" testWaysIn |> List.ofSeq)
-printf "Lobe for HH %A\n" (findLobeFor "HH" testWaysIn |> List.ofSeq)
-
-let findAllLobesForTermini termini waysIn =
-    termini
-    |> Seq.map (fun (terminusName, _) -> findLobeFor terminusName waysIn |> List.ofSeq)
-
-printf "All test lobes: %A\n" (findAllLobesForTermini testTermini testWaysIn |> List.ofSeq)
-printf "All real lobes: %A\n" (findAllLobesForTermini termini waysIn |> List.ofSeq)
-
-// Disappointingly, lobes account for only 12 of the sites.
-// More precisely:
+// Disappointingly, lobes accounted for only 12 of the sites. More precisely:
 // Test: 2 lobes of length 4 and 2 (8 sites)
 //  EE FF GG HH
 //  II JJ
@@ -158,20 +156,22 @@ printf "All real lobes: %A\n" (findAllLobesForTermini termini waysIn |> List.ofS
 //  EQ ZN HL DW LC JL
 //  EX RB CC
 // That doesn't pare the problem space down enough.
-
-// What if, instead, we looked for lines (of which lobes are a special case)? Just look for non-branching
-// node sequences?
-// There might be a relatively small number of clusters joined mostly by lines.
-
-let countNonBranchingLocations (sites:ValveSite list) =
-    sites
-    |> Seq.filter (fun (ValveSite (valve, _, tunnels)) -> (Seq.length tunnels) <= 2)
-    |> Seq.length
-
-printf "Non-branching in test data %d\n" (countNonBranchingLocations testSites)
-printf "Non-branching in input data %d\n" (countNonBranchingLocations sites)
-
-// Aha! 47 of my inputs are non-branching.
+//
+// My next thought was to ask what if, instead, we looked for lines (of which lobes are
+// a special case)? Just look for non-branching node sequences? There might be a relatively
+// small number of clusters joined mostly by lines.
+//
+// Again, had I looked more closely at the counterintuitive turns taken by the optimal
+// path, I might have realised that this probably wasn't going to help much. It's not
+// obvious why, when your map consists of a central cluster and two nodes (as the test input
+// does) your optimal path would involve going out and back into that cluster twice,
+// opening one of the valves in that cluster only on the final visit. But before realising
+// that, I did a bit of analysis and determined that 47 of my inputs are non-branching.
+// This is an important fact because it means that the search space won't explode at quite
+// the rate a fully-interconnected graph would, but the fact that the need to balance
+// multiple high-value nodes to achieve a non-obvious best result means you can't exploit
+// this mostly-non-branching structure to go directly to an answer. You still need to
+// explore, it's just that the exploration will be (just about) manageable.
 
 type SummarizedNetwork =
     SummarizedNetwork
