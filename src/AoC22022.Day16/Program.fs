@@ -562,7 +562,7 @@ let candidateNextLocations network bestScoreFromLastRound currentLocation =
     | _ -> failwithf "Failed to find site %s" currentPositionName
     // Basic min/max culling.
     // The best score from the previous round sets a lower bar on the result - no matter
-    // where we go next, we can't possible get a lower score than the one we already have.
+    // where we go next, we can't possibly get a lower score than the one we already have.
     // So we can ask: do any of the proposed candidates have an upper bound on their score
     // that means they can't possibly produce a better score than the one we already know
     // we can achieve. A crude but simple calculation of the upper bound is to multiply the
@@ -572,7 +572,7 @@ let candidateNextLocations network bestScoreFromLastRound currentLocation =
     // (We could do more subtle calculations, based on how far away each of the valves is
     // from here. That might be necessary if this doesn't cull enough of the search space.)
     |> Seq.filter (fun (LocationInBreadthSearch (_, _, score, unopenedValveFlow)) ->
-        let scoreFromOpeningRemainingValves = unopenedValveFlow * minutesRemaining
+        let scoreFromOpeningRemainingValves = unopenedValveFlow * (minutesRemaining - 1)
         let scoreUpperBound = score + scoreFromOpeningRemainingValves
         scoreUpperBound >= bestScoreFromLastRound)
 
@@ -889,7 +889,10 @@ let solvePart1 summarized =
     let mutable result = 0
     let (SummarizedNetwork (_, nodeNames)) = summarized
     for locations in ((walkNetwork summarized) |> Seq.take 30) do
-        result <- (locations |> Seq.map (fun (LocationInBreadthSearch (_,_,score, _)) -> score) |> Seq.max)
+        let newLocationsAvailable = Seq.isEmpty locations |> not
+
+        if newLocationsAvailable then
+            result <- (locations |> Seq.map (fun (LocationInBreadthSearch (_,_,score, _)) -> score) |> Seq.max)
         //let sortedLocations =
         //    locations
         //    |> Seq.sortBy
@@ -903,7 +906,8 @@ let solvePart1 summarized =
         //for location in sortedLocations do
         //    printf "%s\n" (displayLocation location)
         printf "Max: %d\n" result
-        printf "  %A\n\n" (locations |> Seq.maxBy (fun (LocationInBreadthSearch (_,_,score, _)) -> score) |> displayLocation nodeNames)
+        if newLocationsAvailable then
+            printf "  %A\n\n" (locations |> Seq.maxBy (fun (LocationInBreadthSearch (_,_,score, _)) -> score) |> displayLocation nodeNames)
     result
 
 solvePart1 testSummarized =! 1651
