@@ -173,339 +173,113 @@ testSites[9] =! ValveSite (Valve "JJ", 21, [Valve "II"])
 // this mostly-non-branching structure to go directly to an answer. You still need to
 // explore, it's just that the exploration will be (just about) manageable.
 
+// In the solution I eventually used, one operation happens a lot: comparing sets of open
+// valves. For each candidate path through the network, I keep track of the valves that
+// have been opened so far, and when trying to work out whether various candidate next
+// moves are better than, worse than, or equivalent to other ones (to avoid exploring
+// pointless options like going round in circles without ever opening a valve), it is
+// often useful to ask "does this candidate have the same valves open as this other
+// candidate?"
+//
+// Right now, I'm modeling open valve sets with a Set<string>, and profiling has revealed
+// that we spend a lot of time inside the Set<T> comparison logic. Since there are never
+// more than 64 valves, we could model this with a bitfield in a 64-bit integer, at which
+// point set comparison becomes a simple value comparison. The tricky thing is mapping between
+// node names and bit positions.
+//
+// What I'm thinking is we can observe that the names are always a pair of uppercase letters,
+// giving us 26*26=676 possible names, so we could build a 676-byte lookup table mapping from
+// name to bit position. And of course we can trivially build a lookup table from bit position
+// to name.
+
+type NodeNameSet = NodeNameSet of nameToBitIndex:(byte array) * bitIndexToName:(string array)
+let nodeLabelToInt (name:string) =
+    if name.Length <> 2 then failwithf "Node label must be of length 2, was '%s'" name
+    let charToNum (c:char) =
+        let result = (int c) - (int 'A')
+        if result < 0 || result > 25 then failwithf "Node label letters must be in range A-Z, was '%c'" c
+        result
+    let lower = charToNum name[0]
+    let higher = charToNum name[1]
+    lower + (higher * 26)
+let makeNodeNameSet (names:string seq) =
+    let indexedNames =
+        names
+        |> Seq.sort // For cosmetic purposes only
+        |> Seq.mapi (fun i v -> (byte i, v))
+    let (nameToBitIndex, bitIndexToName) =
+        Seq.foldBack
+            (fun (i, label) ((nameToBitIndex:byte array), bitIndexToName) ->
+                let labelNumber = nodeLabelToInt label
+                if nameToBitIndex[labelNumber] <> 255uy then failwithf "Duplicate label: '%s'" label
+                nameToBitIndex[labelNumber] <- i
+                (nameToBitIndex, label::bitIndexToName))
+            indexedNames
+            ((Array.create (26*26) 255uy), List.empty)
+    NodeNameSet (nameToBitIndex, Array.ofList bitIndexToName)
+
+type NodeSet =
+    struct
+        val Members:uint64
+        new(members:uint64) = { Members = members }
+    end
+
+let emptyNodeSet (names:NodeNameSet) = NodeSet 0UL
+let nodeSetContains (nodeSetContained:NodeSet) (nodeSetOuter:NodeSet) =
+    (nodeSetContained.Members &&& nodeSetOuter.Members) = nodeSetContained.Members
+let combineNodeSets (nodeSet1:NodeSet) (nodeSet2:NodeSet) =
+    NodeSet (nodeSet1.Members ||| nodeSet2.Members)
+
+let nodeSetFromLabel (NodeNameSet (nameToBitIndex, _)) label =
+    let labelNumber = nodeLabelToInt label
+    let bitIndex = nameToBitIndex[labelNumber]
+    NodeSet (1UL <<< int bitIndex)
+let nodeSetFromLabels names labels =
+    Seq.fold
+        (fun nodeSet label -> combineNodeSets nodeSet (nodeSetFromLabel names label))
+        (emptyNodeSet names)
+        labels
+
+
+let labelsFromNodeSet (NodeNameSet (_, bitIndexToName)) (nodeset:NodeSet) =
+    Seq.unfold
+        (fun (bits, i, labels) ->
+            if bits = 0UL || i < 0 then None
+            else
+                let mask = 1UL <<< i
+                let isSet = (bits &&& mask) <> 0UL
+                let updatedLabels = 
+                    if isSet then bitIndexToName[i]::labels
+                    else labels
+                Some (updatedLabels, (bits &&& ~~~mask, i - 1, updatedLabels)))
+        (nodeset.Members, 63, List.empty)
+    |> Seq.tryLast
+    |> Option.defaultValue List.empty
+
 type SummarizedNetwork =
     SummarizedNetwork
-        // Key is (startName, endName), and the value is all the ValveSites in that chain
-        of chains:Map<string * string, Set<string>>
-        * chainsByStart:Map<string, string*string>
-        * complexSites:Map<string, ValveSite>
-        * allSize:Map<string, ValveSite>
+        of allSites:Map<string, ValveSite> *
+        nodeNames:NodeNameSet
 
 let summarizeNetwork (sites:ValveSite list) =
-    let (SummarizedNetwork (chains, _, complexSites, allSites)) =
+    let siteMap =
         sites
         |> Seq.fold 
-            (fun summarizedNetwork valveSite ->
-                let addUnidirectionalChainElement fromValve toValve (SummarizedNetwork (chains, chainsByStart, complexSites, allSites)) =
-                    let matchingKeys =
-                        chains
-                        |> Map.keys
-                        |> Seq.filter (fun (k1, k2) ->
-                            (toValve = k1) || (fromValve = k2))
-                        |> List.ofSeq
-                    match matchingKeys with
-                    | [] ->
-                        SummarizedNetwork (
-                            chains |> Map.add (fromValve, toValve) (Set.ofList [fromValve; toValve]),
-                            chainsByStart |> Map.add fromValve (fromValve, toValve),
-                            complexSites,
-                            allSites)
-                    | keys ->
-                        keys
-                        |> Seq.fold
-                            (fun (SummarizedNetwork (chains, chainsByStart, complexSites, allSites)) (k1, k2) ->
-                                let chainMembers = chains[(k1, k2)]
-                                let before = k1 = toValve
-                                // EE [FF; DD]:
-                                //  (EE,FF): EE -> FF; (EE,DD): EE -> DD
-                                // FF [EE; GG]
-                                //  (EE,GG): EE -> FF -> GG; (FF,DD): FF -> EE -> DD
-                                // GG [FF;HH]
-                                //  (EE,HH): EE -> FF -> GG -> HH; (GG,DD): GG -> FF -> EE -> DD
-                                // HH [GG]
-                                //  (EE,HH): EE -> FF -> GG -> HH; (HH,DD): HH -> GG -> FF -> EE -> DD
-                            
-                                if (before && ((fromValve = k2)
-                                    || chainMembers |> Set.contains fromValve))
-                                    || ((not before) && ((toValve = k1)
-                                            || chainMembers |> Set.contains toValve)) then
-                                    // This is pointer back up the chain, so don't try to add this.
-                                    SummarizedNetwork (chains, chainsByStart, complexSites, allSites)
-                                else
-                                    let chainsExceptThis = Map.remove (k1, k2) chains
-                                    let chainsByStartExceptThis = Map.remove k1 chainsByStart
-                                    let (updatedMap, updatedByStartMap) =
-                                        if before then
-                                            let updatedChain = chainMembers |> Set.add fromValve
-                                            // This site extends the start of the chain
-                                            // fromValve..k1/toValve..(chain)..k2
-                                            (
-                                                chainsExceptThis |> Map.add (fromValve, k2) updatedChain,
-                                                chainsByStartExceptThis |> Map.add fromValve (fromValve, k2)
-                                            )
-                                        else
-                                            let updatedChain = chainMembers |> Set.add toValve
-                                            // This site extends the end of the chain
-                                            // k1..(chain)..k2/fromValve..toValve
-                                            (
-                                                chainsExceptThis |> Map.add (k1, toValve) updatedChain,
-                                                chainsByStartExceptThis |> Map.add k1 (k1, toValve)
-                                            )
-                                    SummarizedNetwork (updatedMap, updatedByStartMap, complexSites, allSites))
-                            (SummarizedNetwork (chains, chainsByStart, complexSites, allSites))
-
+            (fun sites valveSite ->
                 let (ValveSite (Valve valve, _, _)) = valveSite
-                let (SummarizedNetwork (uc, ucbs, cs, all)) =
-                    match valveSite with
-                    | ValveSite (_, _, [Valve t1; Valve t2]) ->
-                        summarizedNetwork
-                        |> addUnidirectionalChainElement valve t1
-                        |> addUnidirectionalChainElement valve t2
-                    | ValveSite (_, _, [Valve t1]) ->
-                        addUnidirectionalChainElement valve t1 summarizedNetwork
-                    | ValveSite (_, _, _) ->
-                        let (SummarizedNetwork (chains, chainsByStart, complexSites, allSites)) = summarizedNetwork
-                        SummarizedNetwork (
-                            chains,
-                            chainsByStart,
-                            complexSites |> Map.add valve valveSite,
-                            allSites)
-                SummarizedNetwork (uc, ucbs, cs, all |> Map.add valve valveSite))
-            (SummarizedNetwork (Map.empty, Map.empty, Map.empty, Map.empty))
-    let chainsByStart =
-        chains
-        |> Map.keys
-        |> Seq.fold
-            (fun m (startValve, endValve) -> m |> Map.add startValve (startValve, endValve))
+                sites |> Map.add valve valveSite)
             Map.empty
-    SummarizedNetwork (chains, chainsByStart, complexSites, allSites)
+    SummarizedNetwork (siteMap, siteMap.Keys |> makeNodeNameSet)
 
 let testSummarized = (summarizeNetwork testSites)
+let (SummarizedNetwork (_, testNodeNames)) = testSummarized
+let testEmptyNodeSet = emptyNodeSet testNodeNames
 printf "Test summarized: %A\n" testSummarized
 
 let summarized = (summarizeNetwork sites)
+let (SummarizedNetwork (_, nodeNames)) = testSummarized
 printf "Sites summarized: %A\n" summarized
 
-// Test: 2 complex sites and 6 connecting sequences.
-// Real: 10 complex sites and 50 connecting sequences.
-//
-// Bear in mind that we detect connecting sequences in both
-// directions, so EE -> HH and HH -> DD are effectively the
-// same sequence twice. (They might not look like it. That's
-// because DD is part of a compex node, so it only becomes
-// a line when you go from DD to EE. But if you're at the HH
-// end, EE only has the option to go back to DD.)
-// So in practice that's:
-// Test: 2 complex sites and 3 bidirectional connecting sequences.
-// Read: 10 complex sites and 25 bidirectional connecting sequences.
-
-let calculateBranches (SummarizedNetwork (_, _, complexSites, _)) =
-    complexSites.Values
-    |> Seq.fold
-        (fun total (ValveSite (_, _, tunnels)) ->
-            total * (int64 (tunnels.Length)))
-        1L
-printf "Test branches: %d\n" (calculateBranches testSummarized)
-printf "Branches: %d\n" (calculateBranches summarized)
-
-// The test input branches into 9 options.
-// The real input branches into 1,800,000 - a lot, but manageable.
-// So let's just try that.
-// We start at AA, and we're in Complex Node mode.
-//  If flow rate non-zero, and not already open, open valve
-//      (Question: are there cases where we gain something by not opening a
-//       valve so that we have time to make it to a higher-valued valve?)
-//  Branch, trying each of the Complex Node's exits.
-//  If we're still in a Complex Node:
-//      recurse
-//  Otherwise:
-//      Don't branch. If this is not a terminus:
-//          Go to the node we didn't come in from
-//      If this is a terminus:
-//          Go to the node we just came in from
-
-
-let findUpperBound valveSites =
-    valveSites
-    |> List.sumBy (fun (ValveSite (_, flowRate, _)) -> flowRate)
-
-printf "Test max possible: %d\n" (findUpperBound testSites)
-printf "Real max possible: %d\n" (findUpperBound sites)
-
-let findMaximumReliefWithChains totalTime network =
-    let (SummarizedNetwork (chains, chainsByStart, complexSites, allSites)) = network
-    let startSite = complexSites["AA"]
-    let rec maxReliefForBranch
-            (currentMinute:int)
-            (culumativeRelease:int)
-            openValves
-            currentReleaseRate
-            (beenHereBefore:Set<string*string*int>) // From v to v with cumulative release r
-            site =
-        if currentMinute > totalTime then culumativeRelease
-        else
-            let (ValveSite (valve, flowRate, exits)) = site
-            let (Valve fromValveName) = valve
-            let couldOpen = (flowRate > 0) && (not (Set.contains valve openValves))
-            exits
-            |> Seq.filter (fun (Valve toValve) ->
-                not (beenHereBefore |> Set.contains (fromValveName, toValve, currentReleaseRate)))
-            |> Seq.map (fun exit ->
-                let (Valve toValve) = exit
-                maxForValve
-                    currentMinute
-                    culumativeRelease
-                    openValves
-                    currentReleaseRate
-                    (beenHereBefore |> Set.add (fromValveName, toValve, currentReleaseRate))
-                    valve
-                    flowRate
-                    exit
-                    couldOpen)
-            |> Seq.append [0] // Sequence will be empty if we already tried all options before
-            |> Seq.max
-    and maxReliefForLine
-        currentMinute
-        culumativeRelease
-        openValves
-        currentReleaseRate
-        beenHereBefore
-        valve =
-        if currentMinute > totalTime then culumativeRelease
-        else
-            let (_, nextInChain) = chainsByStart[valve]
-            let (ValveSite (valve, flowRate, exits)) = allSites[valve]
-            let (ValveSite (nextValve, _, _)) = allSites[nextInChain]
-            let couldOpen = (flowRate > 0) && (not (Set.contains valve openValves))
-            maxForValve
-                currentMinute
-                culumativeRelease
-                openValves
-                currentReleaseRate
-                beenHereBefore
-                valve
-                flowRate
-                nextValve
-                couldOpen
-    and maxForValve
-        currentMinute
-        culumativeRelease
-        openValves
-        currentReleaseRate
-        beenHereBefore
-        valve
-        flowRate
-        (Valve exit)
-        couldOpen =
-        if currentMinute > totalTime then culumativeRelease
-        else
-            let maxWithoutOpeningValve =
-                match Map.tryFind exit complexSites with
-                | Some site ->
-                    maxReliefForBranch
-                        (currentMinute + 1)
-                        culumativeRelease
-                        openValves
-                        currentReleaseRate
-                        beenHereBefore
-                        site
-                | None ->
-                    maxReliefForLine
-                        (currentMinute + 1)
-                        culumativeRelease
-                        openValves
-                        currentReleaseRate
-                        beenHereBefore
-                        exit
-            if couldOpen then
-                let updatedOpenValves = Set.add valve openValves
-                let minutesForWhichValveWillRemainOpen = totalTime - (currentMinute)
-                let totalReliefFromThisValve = flowRate * minutesForWhichValveWillRemainOpen
-                let updatedCumulativeRelease = culumativeRelease + totalReliefFromThisValve
-                let updatedCurrentReleaseRate = currentReleaseRate + flowRate
-                let maxOpeningValve =
-                    match Map.tryFind exit complexSites with
-                    | Some site ->
-                        maxReliefForBranch
-                            (currentMinute + 2)
-                            updatedCumulativeRelease
-                            updatedOpenValves
-                            updatedCurrentReleaseRate
-                            beenHereBefore site
-                    | None ->
-                        maxReliefForLine
-                            (currentMinute + 2)
-                            updatedCumulativeRelease
-                            updatedOpenValves
-                            updatedCurrentReleaseRate
-                            beenHereBefore
-                            exit
-                max maxWithoutOpeningValve maxOpeningValve
-            else maxWithoutOpeningValve
-    maxReliefForBranch 1 0 Set.empty 0 Set.empty startSite
-
-let findMaximumRelief totalTime network =
-    let (SummarizedNetwork (chains, chainsByStart, complexSites, allSites)) = network
-    let startSite = complexSites["AA"]
-    let rec maxReliefForBranch
-            (currentMinute:int)
-            (culumativeRelease:int)
-            openValves
-            currentReleaseRate
-            (beenHereBefore:Set<string*int>) // To v with cumulative release r
-            site =
-        if currentMinute > totalTime then culumativeRelease
-        else
-            let (ValveSite (valve, flowRate, exits)) = site
-            let (Valve fromValveName) = valve
-            let couldOpen = (flowRate > 0) && (not (Set.contains valve openValves))
-            exits
-            |> Seq.filter (fun (Valve toValve) ->
-                not (beenHereBefore |> Set.contains (toValve, currentReleaseRate)))
-            |> Seq.map (fun exit ->
-                let (Valve toValve) = exit
-                maxForValve
-                    currentMinute
-                    culumativeRelease
-                    openValves
-                    currentReleaseRate
-                    (beenHereBefore |> Set.add (toValve, currentReleaseRate))
-                    valve
-                    flowRate
-                    exit
-                    couldOpen)
-            |> Seq.append [0] // Sequence will be empty if we already tried all options before
-            |> Seq.max
-    and maxForValve
-        currentMinute
-        culumativeRelease
-        openValves
-        currentReleaseRate
-        beenHereBefore
-        valve
-        flowRate
-        (Valve exit)
-        couldOpen =
-        if currentMinute > totalTime then culumativeRelease
-        else
-            let (Valve fromValveName) = valve
-            //printf "%s%s %d\n" (System.String (' ', currentMinute - 1)) fromValveName culumativeRelease
-            let maxWithoutOpeningValve =
-                    maxReliefForBranch
-                        (currentMinute + 1)
-                        culumativeRelease
-                        openValves
-                        currentReleaseRate
-                        beenHereBefore
-                        allSites[exit]
-            if couldOpen then
-                let updatedOpenValves = Set.add valve openValves
-                let minutesForWhichValveWillRemainOpen = totalTime - (currentMinute)
-                let totalReliefFromThisValve = flowRate * minutesForWhichValveWillRemainOpen
-                let updatedCumulativeRelease = culumativeRelease + totalReliefFromThisValve
-                let updatedCurrentReleaseRate = currentReleaseRate + flowRate
-                //printf "%s%s (O) %d\n" (System.String (' ', currentMinute)) fromValveName updatedCumulativeRelease
-                let maxOpeningValve =
-                        maxReliefForBranch
-                            (currentMinute + 2)
-                            updatedCumulativeRelease
-                            updatedOpenValves
-                            updatedCurrentReleaseRate
-                            beenHereBefore
-                            allSites[exit]
-                max maxWithoutOpeningValve maxOpeningValve
-            else maxWithoutOpeningValve
-    maxReliefForBranch 1 0 Set.empty 0 (Set.empty |> Set.add ("AA", 0)) startSite
 
 // A completely different way to approach this might be to try to summarize sections.
 // If are at HH at time T, it could be turned on at a rate of 22 for the remaining
@@ -740,7 +514,7 @@ type PathStep = PathMoveStep of valveName:string | PathOpenStep
 type LocationInBreadthSearch =
     LocationInBreadthSearch of
         reversedPath:(PathStep list) *
-        openValves:Set<string> *
+        openValves:NodeSet *
         score:int *
         unopenedValveFlow:int
 let currentPositionNameFromReversedPath path =
@@ -751,25 +525,26 @@ let currentPositionNameFromReversedPath path =
 
 
 let getInitialLocation network =
-    let (SummarizedNetwork (_, _, _, sites)) = network
+    let (SummarizedNetwork (sites, nodeNames)) = network
     let totalFlow = sites.Values |> Seq.sumBy (fun (ValveSite (_, flowRate, _)) -> flowRate)
-    LocationInBreadthSearch ([PathMoveStep "AA"], Set.empty, 0, totalFlow)
+    LocationInBreadthSearch ([PathMoveStep "AA"], (emptyNodeSet nodeNames), 0, totalFlow)
 
 let testInitialLocation = getInitialLocation testSummarized
 let inputInitialLocation = getInitialLocation summarized
 
 let candidateNextLocations network bestScoreFromLastRound currentLocation =
-    let (SummarizedNetwork (_, _, _, sites)) = network
+    let (SummarizedNetwork (sites, nodeNames)) = network
     let (LocationInBreadthSearch (currentReversedPath, openValves, score, unopenedValveFlow)) = currentLocation
     let minutesRemaining = 30 - (currentReversedPath.Length)
     let currentPositionName = currentPositionNameFromReversedPath currentReversedPath
+    let currentPositionAsNodeSet = nodeSetFromLabel nodeNames currentPositionName
     match sites |> Map.tryFind currentPositionName with
     | Some (ValveSite (_, flowRate, tunnels)) ->
         let openStepIfApplicable =
-            if (flowRate > 0) && (not (openValves |> Set.contains currentPositionName)) then
+            if (flowRate > 0) && (not (openValves |> nodeSetContains currentPositionAsNodeSet)) then
                 LocationInBreadthSearch (
                         PathOpenStep::currentReversedPath,
-                        openValves |> Set.add currentPositionName,
+                        openValves |> combineNodeSets currentPositionAsNodeSet,
                         score + flowRate * minutesRemaining,
                         unopenedValveFlow - flowRate)
                 |> Seq.singleton
@@ -803,45 +578,46 @@ let candidateNextLocations network bestScoreFromLastRound currentLocation =
 
 candidateNextLocations testSummarized 0 testInitialLocation |> List.ofSeq =!
     [
-        LocationInBreadthSearch ([PathMoveStep "BB"; PathMoveStep "AA"], Set.empty, 0, 81);
-        LocationInBreadthSearch ([PathMoveStep "DD"; PathMoveStep "AA"], Set.empty, 0, 81);
-        LocationInBreadthSearch ([PathMoveStep "II"; PathMoveStep "AA"], Set.empty, 0, 81);
+        LocationInBreadthSearch ([PathMoveStep "BB"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81);
+        LocationInBreadthSearch ([PathMoveStep "DD"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81);
+        LocationInBreadthSearch ([PathMoveStep "II"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81);
     ]
 candidateNextLocations
     testSummarized
     0
-    (LocationInBreadthSearch ([PathMoveStep "BB"; PathMoveStep "AA"], Set.empty, 0, 81))
+    (LocationInBreadthSearch ([PathMoveStep "BB"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81))
     |> List.ofSeq =!
     [
-        LocationInBreadthSearch ([PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"], (Set.ofList ["BB"]), 13 * 28, 81 - 13);
-        LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "AA"], Set.empty, 0, 81);
-        LocationInBreadthSearch ([PathMoveStep "CC"; PathMoveStep "BB"; PathMoveStep "AA"], Set.empty, 0, 81);
+        LocationInBreadthSearch ([PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"], (nodeSetFromLabel testNodeNames "BB"), 13 * 28, 81 - 13);
+        LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81);
+        LocationInBreadthSearch ([PathMoveStep "CC"; PathMoveStep "BB"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81);
     ]
 
 candidateNextLocations
     testSummarized
     (13 * 28)
-    (LocationInBreadthSearch ([PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"], (Set.ofList ["BB"]), 13 * 28, 81 - 13))
+    (LocationInBreadthSearch ([PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"], (nodeSetFromLabel testNodeNames "BB"), 13 * 28, 81 - 13))
     |> List.ofSeq =!
     [
-        LocationInBreadthSearch ([PathMoveStep "AA"; PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"], (Set.ofList ["BB"]), 13 * 28, 81 - 13);
-        LocationInBreadthSearch ([PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"], (Set.ofList ["BB"]), 13 * 28, 81 - 13);
+        LocationInBreadthSearch ([PathMoveStep "AA"; PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"], (nodeSetFromLabel testNodeNames "BB"), 13 * 28, 81 - 13);
+        LocationInBreadthSearch ([PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"], (nodeSetFromLabel testNodeNames "BB"), 13 * 28, 81 - 13);
     ]
 
 type BreadthSearchState =
     BreadthSearchState of currentLocations:(LocationInBreadthSearch list) *
-    maximaByLocationThenValves:Map<string, (Set<string> * int) list>
+    maximaByLocationThenValves:Map<string, (NodeSet * int) list>
 let getInitialBreadthSearchState network =
     let initialLocation = getInitialLocation network
-    BreadthSearchState ([initialLocation], Map.empty |> Map.add "AA" [(Set.empty, 0)])
+    let (SummarizedNetwork (_, nodeNames)) = network
+    BreadthSearchState ([initialLocation], Map.empty |> Map.add "AA" [(emptyNodeSet nodeNames, 0)])
 let testInitialBreadthSearchState = getInitialBreadthSearchState testSummarized
 let inputInitialBreadthSearchState = getInitialBreadthSearchState summarized
 
 type CandidateComparisonResult = LeftIsBetter | RightIsBetter | LeftAndRightIdentical
 type PartialOrderComparisonResult = PartialOrdered of result:CandidateComparisonResult | NeitherIsEvidentlyBetter
-let isBetterCandidate leftPathLength leftOpenValves leftScore rightPathLength rightOpenValves rightScore =
+let isBetterCandidate (leftPathLength:int) (leftOpenValves:NodeSet) (leftScore:int) rightPathLength (rightOpenValves:NodeSet) rightScore =
     let valves =
-        if leftOpenValves = rightOpenValves then PartialOrdered LeftAndRightIdentical
+        if leftOpenValves.Members = rightOpenValves.Members then PartialOrdered LeftAndRightIdentical
         // Having more valves open isn't actually necessarily better. If two paths lead to the
         // same position and the same score, but one has fewer valves open, it has more scope
         // to improve its score by opening those other valves.
@@ -849,7 +625,7 @@ let isBetterCandidate leftPathLength leftOpenValves leftScore rightPathLength ri
         //else if (Set.isSubset rightOpenValves leftOpenValves) then PartialOrdered LeftIsBetter
         else NeitherIsEvidentlyBetter
 
-    let compareScores left right =
+    let compareScores (left:int) (right:int) =
         if left = right then LeftAndRightIdentical
         else if left < right then RightIsBetter
         else LeftIsBetter
@@ -874,25 +650,25 @@ let isBetterCandidate leftPathLength leftOpenValves leftScore rightPathLength ri
 
 // Shorter path, same effect (no valves yet)
 // (AA,BB,CC,DD):0 vs (AA,DD):0
-isBetterCandidate 4 Set.empty 0 2 Set.empty 0 =! PartialOrdered RightIsBetter
-isBetterCandidate 2 Set.empty 0 4 Set.empty 0 =! PartialOrdered LeftIsBetter
+isBetterCandidate 4 testEmptyNodeSet 0 2 testEmptyNodeSet 0 =! PartialOrdered RightIsBetter
+isBetterCandidate 2 testEmptyNodeSet 0 4 testEmptyNodeSet 0 =! PartialOrdered LeftIsBetter
 
 // Shorter path, same effect
 
 
 // Same path length, same valves, same score
 // (AA,BB,O,CC,DD)-(BB):364 vs (AA,BB,O,AA,DD)-(BB):364
-isBetterCandidate 5 (Set.singleton "BB") 364 5 (Set.singleton "BB") 364 =! PartialOrdered LeftAndRightIdentical
+isBetterCandidate 5 (nodeSetFromLabels testNodeNames ["BB"]) 364 5 (nodeSetFromLabels testNodeNames ["BB"]) 364 =! PartialOrdered LeftAndRightIdentical
 
 // Same path length, same valves, different score
 // (AA,BB,CC,O,DD,O)-(CC,DD):554 vs (AA,DD,O,CC,O,DD):612
-isBetterCandidate 6 (Set.ofList ["CC";"DD"]) 554 6 (Set.ofList ["CC";"DD"]) 612 =! PartialOrdered RightIsBetter
-isBetterCandidate 6 (Set.ofList ["CC";"DD"]) 612 6 (Set.ofList ["CC";"DD"]) 554 =! PartialOrdered LeftIsBetter
+isBetterCandidate 6 (nodeSetFromLabels testNodeNames ["CC";"DD"]) 554 6 (nodeSetFromLabels testNodeNames ["CC";"DD"]) 612 =! PartialOrdered RightIsBetter
+isBetterCandidate 6 (nodeSetFromLabels testNodeNames ["CC";"DD"]) 612 6 (nodeSetFromLabels testNodeNames ["CC";"DD"]) 554 =! PartialOrdered LeftIsBetter
 
 // Same path length, different non-subset valves (different score, but doesn't matter)
 // (AA,BB,O,AA,DD,O)-(BB,DD):864 vs (AA,BB,O,CC,O,DD)-(BB,CC):416
-isBetterCandidate 6 (Set.ofList ["BB";"DD"]) 864 6 (Set.ofList ["BB";"CC"]) 416 =! NeitherIsEvidentlyBetter
-isBetterCandidate 6 (Set.ofList ["BB";"CC"]) 416 6 (Set.ofList ["BB";"DD"]) 864 =! NeitherIsEvidentlyBetter
+isBetterCandidate 6 (nodeSetFromLabels testNodeNames ["BB";"DD"]) 864 6 (nodeSetFromLabels testNodeNames ["BB";"CC"]) 416 =! NeitherIsEvidentlyBetter
+isBetterCandidate 6 (nodeSetFromLabels testNodeNames ["BB";"CC"]) 416 6 (nodeSetFromLabels testNodeNames ["BB";"DD"]) 864 =! NeitherIsEvidentlyBetter
 
 // Test valve subsets?
 
@@ -905,7 +681,7 @@ let filterCandidateLocationBasedOnState
         let atLeastOneEquivalentOrBetterExists =
             maximaByValves
             |> List.exists (fun (existingPositionOpenValves, existingPositionScore) ->
-                (Set.isSubset candidateOpenValves existingPositionOpenValves) &&
+                (nodeSetContains candidateOpenValves existingPositionOpenValves) &&
                     existingPositionScore >= candidateScore)
         not atLeastOneEquivalentOrBetterExists
     | None -> true
@@ -913,12 +689,12 @@ let filterCandidateLocationBasedOnState
 candidateNextLocations
     testSummarized
     0
-    (LocationInBreadthSearch ([PathMoveStep "BB"; PathMoveStep "AA"], Set.empty, 0, 81))
+    (LocationInBreadthSearch ([PathMoveStep "BB"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81))
     |> Seq.filter (filterCandidateLocationBasedOnState testInitialBreadthSearchState)
     |> List.ofSeq =!
     [
-        LocationInBreadthSearch ([PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"], (Set.ofList ["BB"]), 13*28, 81 - 13);
-        LocationInBreadthSearch ([PathMoveStep "CC"; PathMoveStep "BB"; PathMoveStep "AA"], Set.empty, 0, 81);
+        LocationInBreadthSearch ([PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"], (nodeSetFromLabel testNodeNames "BB"), 13*28, 81 - 13);
+        LocationInBreadthSearch ([PathMoveStep "CC"; PathMoveStep "BB"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81);
     ]
 
 // Having produced a list of candidates and removed any that are demonstrably less good
@@ -1011,22 +787,22 @@ let reduceCandidatesToSingleBest candidates =
 
 
 reduceCandidatesToSingleBest
-    [LocationInBreadthSearch ([PathMoveStep "AA"], Set.empty, 0, 81)] |> List.ofSeq
+    [LocationInBreadthSearch ([PathMoveStep "AA"], testEmptyNodeSet, 0, 81)] |> List.ofSeq
     =!
-    [LocationInBreadthSearch ([PathMoveStep "AA"], Set.empty, 0, 81)]
+    [LocationInBreadthSearch ([PathMoveStep "AA"], testEmptyNodeSet, 0, 81)]
 
 reduceCandidatesToSingleBest
-    [LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "DD"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"], Set.ofList ["CC"], 54, 81 - 2);
-     LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"], Set.ofList ["CC"], 54, 81 - 2)] |> List.ofSeq
+    [LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "DD"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"], nodeSetFromLabels testNodeNames ["CC"], 54, 81 - 2);
+     LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"], nodeSetFromLabels testNodeNames ["CC"], 54, 81 - 2)] |> List.ofSeq
     =!
-    [LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"], Set.ofList ["CC"], 54, 81 - 2)]
+    [LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"], nodeSetFromLabels testNodeNames ["CC"], 54, 81 - 2)]
 
 reduceCandidatesToSingleBest
-    [LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "DD"; PathOpenStep], Set.ofList ["CC";"DD"], 554, 81 - - 20);
-     LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "DD"; PathOpenStep; PathMoveStep "CC"; PathOpenStep; PathMoveStep "DD"], Set.ofList ["CC";"DD"], 612, 81 - 2 - 20)
+    [LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "DD"; PathOpenStep], nodeSetFromLabels testNodeNames ["CC";"DD"], 554, 81 - - 20);
+     LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "DD"; PathOpenStep; PathMoveStep "CC"; PathOpenStep; PathMoveStep "DD"], nodeSetFromLabels testNodeNames ["CC";"DD"], 612, 81 - 2 - 20)
      ] |> List.ofSeq
     =!
-    [LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "DD"; PathOpenStep; PathMoveStep "CC"; PathOpenStep; PathMoveStep "DD"], Set.ofList ["CC";"DD"], 612, 81 - 2 - 20)]
+    [LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "DD"; PathOpenStep; PathMoveStep "CC"; PathOpenStep; PathMoveStep "DD"], nodeSetFromLabels testNodeNames ["CC";"DD"], 612, 81 - 2 - 20)]
 
 
 let walkNetwork network =
@@ -1101,16 +877,17 @@ let displayPathStep step =
     | PathOpenStep -> "O"
     | PathMoveStep l -> l
 
-let displayLocation (LocationInBreadthSearch (reversedPath, openValves, score, unopenedValveFlow)) =
+let displayLocation nodeNames (LocationInBreadthSearch (reversedPath, openValves, score, unopenedValveFlow)) =
     sprintf
         "%d(%d): %s-(%A)"
         score
         unopenedValveFlow
         (System.String.Join(", ", (Seq.rev reversedPath |> Seq.map displayPathStep)))
-        openValves
+        (labelsFromNodeSet nodeNames openValves)
 
 let solvePart1 summarized =
     let mutable result = 0
+    let (SummarizedNetwork (_, nodeNames)) = summarized
     for locations in ((walkNetwork summarized) |> Seq.take 30) do
         result <- (locations |> Seq.map (fun (LocationInBreadthSearch (_,_,score, _)) -> score) |> Seq.max)
         //let sortedLocations =
@@ -1126,7 +903,7 @@ let solvePart1 summarized =
         //for location in sortedLocations do
         //    printf "%s\n" (displayLocation location)
         printf "Max: %d\n" result
-        printf "  %A\n\n" (locations |> Seq.maxBy (fun (LocationInBreadthSearch (_,_,score, _)) -> score) |> displayLocation)
+        printf "  %A\n\n" (locations |> Seq.maxBy (fun (LocationInBreadthSearch (_,_,score, _)) -> score) |> displayLocation nodeNames)
     result
 
 solvePart1 testSummarized =! 1651
