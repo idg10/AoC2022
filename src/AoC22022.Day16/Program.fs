@@ -602,6 +602,21 @@ let candidateNextLocations (ProblemParameters (availableTime, participantCount))
             let moveSteps =
                 tunnels
                 |> Seq.sort
+                |> Seq.filter (fun (Valve nextLocation) ->
+                    let retracesStepsWithoutOpening =
+                        currentReversedPath
+                        |> Seq.scan
+                            (fun _ t ->
+                                match t with
+                                | PathOpenStep -> Some false
+                                | PathMoveStep m ->
+                                    if m = nextLocation then Some true
+                                    else None)
+                            None
+                        |> Seq.tryPick id
+                        |> Option.defaultValue false
+                    
+                    not retracesStepsWithoutOpening)
                 |> Seq.map (fun (Valve nextLocation) ->
                     (
                         PathMoveStep nextLocation::currentReversedPath,
@@ -716,7 +731,6 @@ candidateNextLocations
     |> List.ofSeq =!
     [
         LocationInBreadthSearch ([[PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"]], (nodeSetFromLabel testNodeNames "BB"), 13 * 28, 81 - 13);
-        LocationInBreadthSearch ([[PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "AA"]], testEmptyNodeSet, 0, 81);
         LocationInBreadthSearch ([[PathMoveStep "CC"; PathMoveStep "BB"; PathMoveStep "AA"]], testEmptyNodeSet, 0, 81);
     ]
 
@@ -733,11 +747,11 @@ candidateNextLocations
 
 type BreadthSearchState =
     BreadthSearchState of currentLocations:(LocationInBreadthSearch list) *
-    maximaByLocationsThenValves:Map<string list, (NodeSet * int) list>
+    maximaByLocationsThenValves:Map<string, (NodeSet * int) list>
 let getInitialBreadthSearchState problemParameters network =
     let initialLocation = getInitialLocation problemParameters network
     let (SummarizedNetwork (_, nodeNames, _)) = network
-    BreadthSearchState ([initialLocation], Map.empty |> Map.add ["AA"] [(emptyNodeSet nodeNames, 0)])
+    BreadthSearchState ([initialLocation], Map.empty |> Map.add "AA" [(emptyNodeSet nodeNames, 0)])
 let testInitialBreadthSearchStatePart1 = getInitialBreadthSearchState part1Parameters testSummarized
 let inputInitialBreadthSearchStatePart1 = getInitialBreadthSearchState part1Parameters summarized
 let testInitialBreadthSearchStatePart2 = getInitialBreadthSearchState part2Parameters testSummarized
@@ -805,20 +819,19 @@ isBetterCandidate 6 (nodeSetFromLabels testNodeNames ["BB";"CC"]) 416 6 (nodeSet
 let filterCandidateLocationBasedOnState
     (BreadthSearchState (_, maximaByLocationAndValves))
     (LocationInBreadthSearch (candidateReversedPaths, candidateOpenValves, candidateScore, unopenedValveFlow)) =
-    //let checkOnePath candidateReversedPath =
-    let candidateLocationNames =
-        candidateReversedPaths
-        |> List.map currentPositionNameFromReversedPath
-    match maximaByLocationAndValves |> Map.tryFind candidateLocationNames with
-    | Some maximaByValves ->
-        let atLeastOneEquivalentOrBetterExists =
-            maximaByValves
-            |> List.exists (fun (existingPositionOpenValves, existingPositionScore) ->
-                (nodeSetContains candidateOpenValves existingPositionOpenValves) &&
-                    existingPositionScore >= candidateScore)
-        not atLeastOneEquivalentOrBetterExists
-    | None -> true
-    //candidateReversedPaths |> Seq.forall checkOnePath
+    candidateReversedPaths
+    |> Seq.forall
+        (fun candidateReversedPath ->
+            let candidateLocationName = currentPositionNameFromReversedPath candidateReversedPath
+            match maximaByLocationAndValves |> Map.tryFind candidateLocationName with
+            | Some maximaByValves ->
+                let atLeastOneEquivalentOrBetterExists =
+                    maximaByValves
+                    |> List.exists (fun (existingPositionOpenValves, existingPositionScore) ->
+                        (nodeSetContains candidateOpenValves existingPositionOpenValves) &&
+                            existingPositionScore >= candidateScore)
+                not atLeastOneEquivalentOrBetterExists
+            | None -> true)
 
 candidateNextLocations
     part1Parameters
@@ -960,53 +973,64 @@ let walkNetwork problemParameters network =
             let bestNextLocations =
                 reduceCandidatesToSingleBest candidatesNotObviouslyWorseThanEarlierLocations
                 |> List.ofSeq
-            let newMaxima =
+            if List.isEmpty bestNextLocations then
+                // In multi-participant mode, we can open all the valves before we
+                // run out of time, which can in turn result in us deciding there
+                // are no good new steps (because they all involve retracing our
+                // steps without changing anything)
+                None
+            else
+            let (newMaxima:Map<string, (NodeSet * int) list>) =
                 bestNextLocations
+                |> Seq.collect (fun location ->
+                    let (LocationInBreadthSearch (currentReversedPaths, openValves, score, unopenedValveFlow)) = location
+                    currentReversedPaths
+                    |> Seq.map (fun currentReversedPath ->
+                        (currentReversedPath, openValves, score, unopenedValveFlow)))
                 |> Seq.fold
                     (fun maxima location ->
-                        let (LocationInBreadthSearch (currentReversedPaths, openValves, score, unopenedValveFlow)) = location 
-                        let currentPositionNames =
-                            currentReversedPaths
-                            |> List.map currentPositionNameFromReversedPath
-                        match Map.tryFind currentPositionNames maxima with
+                        let (currentReversedPath, openValves, score, _) = location 
+                        let currentPositionName = currentPositionNameFromReversedPath currentReversedPath
+                        match Map.tryFind currentPositionName maxima with
                         | Some positionMaxima ->
                             // Here, positionMaxima is a list of (open valve, score) entries for
                             // previously discovered routes to currentPositionName. We need to
                             // see whether this new LocationInBreadthSearch either adds a new open
                             // valve set for this position, or achieves a higher score for an open
                             // valve set already seen.
-                            //let (stillToAdd, updatedMaxima) =
-                            //    positionMaxima
-                            //    |> List.fold
-                            //        (fun (finished, updatedList) maximum ->
-                            //            // If we already either replaced an existing maximum with our
-                            //            // new location, or determined that an existing maximum achieved
-                            //            // the same valve set with a better score than our new location,
-                            //            // then we're basically done, and just need to pass all remaining
-                            //            // maxima through.
-                            //            if finished then (true, maximum::updatedList)
-                            //            else
-                            //                let (thisOpenValves, thisScore) = maximum
-                            //                if thisOpenValves = openValves then
-                            //                    if score > thisScore then
-                            //                        // The position we're looking to add has the
-                            //                        // same open valves and a higher score than an
-                            //                        // existing position, so we record it as the
-                            //                        // new maximum.
-                            //                        (true, (openValves, score)::updatedList)
-                            //                    else
-                            //                        // This position has the same valves but a lower
-                            //                        // than or equal score, so we retain the existing
-                            //                        // maximum.
-                            //                        (true, maximum::updatedList)
-                            //                else
-                            //                    // Not a match, so pass through the existing maximum
-                            //                    // and keep looking.
-                            //                (false, maximum::updatedList))
-                            //        (false, [])
-                            maxima
-                        | None -> Map.add currentPositionNames [(openValves, score)] maxima
-                        )
+                            let (stillToAdd, updatedMaxima) =
+                                positionMaxima
+                                |> List.fold
+                                    (fun (finished, updatedList) maximum ->
+                                        // If we already either replaced an existing maximum with our
+                                        // new location, or determined that an existing maximum achieved
+                                        // the same valve set with a better score than our new location,
+                                        // then we're basically done, and just need to pass all remaining
+                                        // maxima through.
+                                        if finished then (true, maximum::updatedList)
+                                        else
+                                            let (thisOpenValves, thisScore) = maximum
+                                            if thisOpenValves = openValves then
+                                                if score > thisScore then
+                                                    // The position we're looking to add has the
+                                                    // same open valves and a higher score than an
+                                                    // existing position, so we record it as the
+                                                    // new maximum.
+                                                    (true, (openValves, score)::updatedList)
+                                                else
+                                                    // This position has the same valves but a lower
+                                                    // than or equal score, so we retain the existing
+                                                    // maximum.
+                                                    (true, maximum::updatedList)
+                                            else
+                                                // Not a match, so pass through the existing maximum
+                                                // and keep looking.
+                                            (false, maximum::updatedList))
+                                    (false, [])
+                            if stillToAdd then
+                                Map.add currentPositionName updatedMaxima maxima
+                            else maxima
+                        | None -> Map.add currentPositionName [(openValves, score)] maxima)
                     currentMaxima
             Some (bestNextLocations, BreadthSearchState (bestNextLocations, newMaxima)))
         initialBreadthSearchState
@@ -1031,7 +1055,7 @@ let solvePart1 summarized =
     sw.Restart()
     let mutable result = 0
     let (SummarizedNetwork (_, nodeNames, _)) = summarized
-    for locations in ((walkNetwork part1Parameters summarized) |> Seq.take 30) do
+    for locations in ((walkNetwork part1Parameters summarized) |> Seq.truncate 30) do
         let newLocationsAvailable = Seq.isEmpty locations |> not
 
         if newLocationsAvailable then
@@ -1065,7 +1089,7 @@ let solvePart2 summarized =
     let mutable result = 0
     let (SummarizedNetwork (_, nodeNames, _)) = summarized
     sw2.Start()
-    for locations in ((walkNetwork part2Parameters summarized) |> Seq.take 26) do
+    for locations in ((walkNetwork part2Parameters summarized) |> Seq.truncate 26) do
         sw2.Stop()
         printf "Step time: %A\n" sw2.Elapsed
         sw2.Restart()
@@ -1073,6 +1097,7 @@ let solvePart2 summarized =
 
         if newLocationsAvailable then
             result <- (locations |> Seq.map (fun (LocationInBreadthSearch (_,_,score, _)) -> score) |> Seq.max)
+
         //let sortedLocations =
         //    locations
         //    |> Seq.sortBy
@@ -1098,12 +1123,4 @@ let solvePart2 summarized =
     result
 
 solvePart2 testSummarized =! 1707
-solvePart2 summarized |> ignore
-//solvePart1 summarized =! 2330
-
-
-// Input has 15 nodes with a non-zero flow rate
-
-
-//printf "Test max: %d\n" (findMaximumRelief 30 testSummarized)
-//printf "Read max: %d\n" (findMaximumRelief 30 summarized)
+solvePart2 summarized =! 2675
