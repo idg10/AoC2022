@@ -535,6 +535,10 @@ printf "Sites summarized: %A\n" summarized
 //    (AA,DD,EE,FF,GG,HH,O)-(HH):0 + 22*24 = 528
 //
 
+type ProblemParameters = ProblemParameters of availableTime:int * participantCount:int
+let part1Parameters = ProblemParameters (30, 1)
+let part2Parameters = ProblemParameters (26, 2)
+
 // We need to keep track of: the maximum score seen for every distinct (location, open valves)
 // combination. This includes scores of 0, because we want to cull longer paths that get
 // to the same location with a score of 0. E.g. (AA,BB,CC,DD,EE):0 should be culled because
@@ -545,7 +549,7 @@ type PathStep = PathMoveStep of valveName:string | PathOpenStep
 
 type LocationInBreadthSearch =
     LocationInBreadthSearch of
-        reversedPath:(PathStep list) *
+        reversedPath:(PathStep list list) *
         openValves:NodeSet *
         score:int *
         unopenedValveFlow:int
@@ -556,44 +560,77 @@ let currentPositionNameFromReversedPath path =
     | _ -> failwith "Path should end either with [PathMoveStep] or [PathMoveStep; PathOpenStep]"
 
 
-let getInitialLocation network =
+let getInitialLocation (ProblemParameters (availableTime, participantCount)) network =
     let (SummarizedNetwork (sites, nodeNames, _)) = network
     let totalFlow = sites.Values |> Seq.sumBy (fun (ValveSite (_, flowRate, _)) -> flowRate)
-    LocationInBreadthSearch ([PathMoveStep "AA"], (emptyNodeSet nodeNames), 0, totalFlow)
+    LocationInBreadthSearch (
+        [1..participantCount] |> List.map (fun _ -> [PathMoveStep "AA"]),
+        (emptyNodeSet nodeNames),
+        0,
+        totalFlow)
 
-let testInitialLocation = getInitialLocation testSummarized
-let inputInitialLocation = getInitialLocation summarized
+let testInitialLocationPart1 = getInitialLocation part1Parameters testSummarized
+let inputInitialLocationPart1 = getInitialLocation part1Parameters summarized
+let testInitialLocationPart2 = getInitialLocation part2Parameters testSummarized
+let inputInitialLocationPart2 = getInitialLocation part2Parameters summarized
 
-let candidateNextLocations network bestScoreFromLastRound currentLocation =
+let candidateNextLocations (ProblemParameters (availableTime, participantCount)) network bestScoreFromLastRound currentLocation =
     let (SummarizedNetwork (sites, nodeNames, distances)) = network
-    let nodeCount = Array2D.length1 distances
-    let (LocationInBreadthSearch (currentReversedPath, openValves, score, unopenedValveFlow)) = currentLocation
-    let minutesRemaining = 30 - (currentReversedPath.Length)
-    let currentPositionName = currentPositionNameFromReversedPath currentReversedPath
-    let currentPositionAsNodeSet = nodeSetFromLabel nodeNames currentPositionName
     let (NodeNameSet (nameToBitIndex, bitIndexToName)) = nodeNames
-    match sites |> Map.tryFind currentPositionName with
-    | Some (ValveSite (_, flowRate, tunnels)) ->
-        let openStepIfApplicable =
-            if (flowRate > 0) && (not (openValves |> nodeSetContains currentPositionAsNodeSet)) then
-                LocationInBreadthSearch (
+
+    let nodeCount = Array2D.length1 distances
+
+    let (LocationInBreadthSearch (currentReversedPaths, openValves, score, unopenedValveFlow)) = currentLocation
+    let pathOfFirstParticipant = currentReversedPaths |> List.head
+    let minutesRemaining = availableTime - (pathOfFirstParticipant.Length)
+
+    let candidatesForOneParticipant (currentReversedPath:PathStep list) openValves score unopenedValveFlow =
+        let currentPositionName = currentPositionNameFromReversedPath currentReversedPath
+        let currentPositionAsNodeSet = nodeSetFromLabel nodeNames currentPositionName
+        match sites |> Map.tryFind currentPositionName with
+        | Some (ValveSite (_, flowRate, tunnels)) ->
+            let openStepIfApplicable =
+                if (flowRate > 0) && (not (openValves |> nodeSetContains currentPositionAsNodeSet)) then
+                    (
                         PathOpenStep::currentReversedPath,
                         openValves |> combineNodeSets currentPositionAsNodeSet,
                         score + flowRate * minutesRemaining,
-                        unopenedValveFlow - flowRate)
-                |> Seq.singleton
-            else Seq.empty
-        let moveSteps =
-            tunnels
-            |> Seq.sort
-            |> Seq.map (fun (Valve nextLocation) ->
-                LocationInBreadthSearch (
-                    PathMoveStep nextLocation::currentReversedPath,
+                        unopenedValveFlow - flowRate
+                    )
+                    |> Seq.singleton
+                else Seq.empty
+            let moveSteps =
+                tunnels
+                |> Seq.sort
+                |> Seq.map (fun (Valve nextLocation) ->
+                    (
+                        PathMoveStep nextLocation::currentReversedPath,
                         openValves,
                         score,
-                        unopenedValveFlow))
-        Seq.concat [openStepIfApplicable; moveSteps]
-    | _ -> failwithf "Failed to find site %s" currentPositionName
+                        unopenedValveFlow
+                    ))
+            Seq.concat [openStepIfApplicable; moveSteps]
+        | _ -> failwithf "Failed to find site %s" currentPositionName
+
+    // Build all candidates for the first participant's reversed path.
+    // If any participants remain, then for each of the candidates produced so far,
+    // build all candidates for the next participant's reversed path, and 
+    let candidates =
+        currentReversedPaths
+        |> Seq.fold
+            (fun startingPoints currentReversedPath ->
+                startingPoints
+                |> Seq.collect
+                    (fun (otherParticipants, openValves, score, unopenedValveFlow) ->
+                        let candidates =
+                            candidatesForOneParticipant currentReversedPath openValves score unopenedValveFlow
+                        candidates
+                        |> Seq.map (fun (newPath, openValves, score, unopenedValveFlow) ->
+                            (newPath::otherParticipants, openValves, score, unopenedValveFlow))))
+                //(candidates, openValves, score, unopenedValveFlow)state)
+            [([], openValves, score, unopenedValveFlow)]
+
+    candidates |> Seq.map LocationInBreadthSearch
     // Basic min/max culling.
     // The best score from the previous round sets a lower bar on the result - no matter
     // where we go next, we can't possibly get a lower score than the one we already have.
@@ -635,63 +672,76 @@ let candidateNextLocations network bestScoreFromLastRound currentLocation =
     // produce a number which is guaranteed not to be lower than the highest possible real
     // value. And this certainly meets that criterion. And it does so in a way that has a
     // decent chance of significantly trimming down the search space.
-    |> Seq.filter (fun (LocationInBreadthSearch (reversedPath, openValves, score, _)) ->
-        let fromNodeName = currentPositionNameFromReversedPath reversedPath
-        let fromNodeBitPosition = int nameToBitIndex[nodeLabelToInt fromNodeName]
+    |> Seq.filter (fun (LocationInBreadthSearch (reversedPaths, openValves, score, _)) ->
+        let fromNodeBitPositions =
+            reversedPaths
+            |> List.map (fun reversedPath ->
+                let fromNodeName = currentPositionNameFromReversedPath reversedPath
+                int nameToBitIndex[nodeLabelToInt fromNodeName])
         let sumOfBestPossibleScoreFromRemainingValves =
             [0..(nodeCount - 1)]
             |> Seq.sumBy (fun toNodeBitPosition ->
-                let toNode = NodeSet (1UL <<< toNodeBitPosition)
-                if (nodeSetContains toNode openValves) then
-                    // The target valve we're looking at is already open, so we've
-                    // nothing more to gain from it.
-                    0
-                else
-                    let toNodeName = bitIndexToName[toNodeBitPosition]
-                    let (ValveSite (_, flowRate, _)) = sites[toNodeName]
-                    let distanceToValve = distances[fromNodeBitPosition, toNodeBitPosition]
-                    let bestCaseTimeWithValveOpen = max 0 (minutesRemaining - distanceToValve - 1)
-                    bestCaseTimeWithValveOpen * flowRate)
+                fromNodeBitPositions
+                |> Seq.map (fun fromNodeBitPosition ->
+                    let toNode = NodeSet (1UL <<< toNodeBitPosition)
+                    if (nodeSetContains toNode openValves) then
+                        // The target valve we're looking at is already open, so we've
+                        // nothing more to gain from it.
+                        0
+                    else
+                        let toNodeName = bitIndexToName[toNodeBitPosition]
+                        let (ValveSite (_, flowRate, _)) = sites[toNodeName]
+                        let distanceToValve = distances[fromNodeBitPosition, toNodeBitPosition]
+                        let bestCaseTimeWithValveOpen = max 0 (minutesRemaining - distanceToValve - 1)
+                        bestCaseTimeWithValveOpen * flowRate)
+                |> Seq.max)
+            
         let scoreUpperBound = sumOfBestPossibleScoreFromRemainingValves + score
+        //let scoreUpperBound =
+        //    reversedPaths |> Seq.sumBy upperBoundForSinglePath
         scoreUpperBound >= bestScoreFromLastRound)
 
 
-candidateNextLocations testSummarized 0 testInitialLocation |> List.ofSeq =!
+candidateNextLocations part1Parameters testSummarized 0 testInitialLocationPart1 |> List.ofSeq =!
     [
-        LocationInBreadthSearch ([PathMoveStep "BB"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81);
-        LocationInBreadthSearch ([PathMoveStep "DD"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81);
-        LocationInBreadthSearch ([PathMoveStep "II"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81);
+        LocationInBreadthSearch ([[PathMoveStep "BB"; PathMoveStep "AA"]], testEmptyNodeSet, 0, 81);
+        LocationInBreadthSearch ([[PathMoveStep "DD"; PathMoveStep "AA"]], testEmptyNodeSet, 0, 81);
+        LocationInBreadthSearch ([[PathMoveStep "II"; PathMoveStep "AA"]], testEmptyNodeSet, 0, 81);
     ]
 candidateNextLocations
+    part1Parameters
     testSummarized
     0
-    (LocationInBreadthSearch ([PathMoveStep "BB"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81))
+    (LocationInBreadthSearch ([[PathMoveStep "BB"; PathMoveStep "AA"]], testEmptyNodeSet, 0, 81))
     |> List.ofSeq =!
     [
-        LocationInBreadthSearch ([PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"], (nodeSetFromLabel testNodeNames "BB"), 13 * 28, 81 - 13);
-        LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81);
-        LocationInBreadthSearch ([PathMoveStep "CC"; PathMoveStep "BB"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81);
+        LocationInBreadthSearch ([[PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"]], (nodeSetFromLabel testNodeNames "BB"), 13 * 28, 81 - 13);
+        LocationInBreadthSearch ([[PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "AA"]], testEmptyNodeSet, 0, 81);
+        LocationInBreadthSearch ([[PathMoveStep "CC"; PathMoveStep "BB"; PathMoveStep "AA"]], testEmptyNodeSet, 0, 81);
     ]
 
 candidateNextLocations
+    part1Parameters
     testSummarized
     (13 * 28)
-    (LocationInBreadthSearch ([PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"], (nodeSetFromLabel testNodeNames "BB"), 13 * 28, 81 - 13))
+    (LocationInBreadthSearch ([[PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"]], (nodeSetFromLabel testNodeNames "BB"), 13 * 28, 81 - 13))
     |> List.ofSeq =!
     [
-        LocationInBreadthSearch ([PathMoveStep "AA"; PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"], (nodeSetFromLabel testNodeNames "BB"), 13 * 28, 81 - 13);
-        LocationInBreadthSearch ([PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"], (nodeSetFromLabel testNodeNames "BB"), 13 * 28, 81 - 13);
+        LocationInBreadthSearch ([[PathMoveStep "AA"; PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"]], (nodeSetFromLabel testNodeNames "BB"), 13 * 28, 81 - 13);
+        LocationInBreadthSearch ([[PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"]], (nodeSetFromLabel testNodeNames "BB"), 13 * 28, 81 - 13);
     ]
 
 type BreadthSearchState =
     BreadthSearchState of currentLocations:(LocationInBreadthSearch list) *
-    maximaByLocationThenValves:Map<string, (NodeSet * int) list>
-let getInitialBreadthSearchState network =
-    let initialLocation = getInitialLocation network
+    maximaByLocationsThenValves:Map<string list, (NodeSet * int) list>
+let getInitialBreadthSearchState problemParameters network =
+    let initialLocation = getInitialLocation problemParameters network
     let (SummarizedNetwork (_, nodeNames, _)) = network
-    BreadthSearchState ([initialLocation], Map.empty |> Map.add "AA" [(emptyNodeSet nodeNames, 0)])
-let testInitialBreadthSearchState = getInitialBreadthSearchState testSummarized
-let inputInitialBreadthSearchState = getInitialBreadthSearchState summarized
+    BreadthSearchState ([initialLocation], Map.empty |> Map.add ["AA"] [(emptyNodeSet nodeNames, 0)])
+let testInitialBreadthSearchStatePart1 = getInitialBreadthSearchState part1Parameters testSummarized
+let inputInitialBreadthSearchStatePart1 = getInitialBreadthSearchState part1Parameters summarized
+let testInitialBreadthSearchStatePart2 = getInitialBreadthSearchState part2Parameters testSummarized
+let inputInitialBreadthSearchStatePart2 = getInitialBreadthSearchState part2Parameters summarized
 
 type CandidateComparisonResult = LeftIsBetter | RightIsBetter | LeftAndRightIdentical
 type PartialOrderComparisonResult = PartialOrdered of result:CandidateComparisonResult | NeitherIsEvidentlyBetter
@@ -754,9 +804,12 @@ isBetterCandidate 6 (nodeSetFromLabels testNodeNames ["BB";"CC"]) 416 6 (nodeSet
 
 let filterCandidateLocationBasedOnState
     (BreadthSearchState (_, maximaByLocationAndValves))
-    (LocationInBreadthSearch (candidateReversedPath, candidateOpenValves, candidateScore, unopenedValveFlow)) =
-    let candidateLocationName = currentPositionNameFromReversedPath candidateReversedPath
-    match maximaByLocationAndValves |> Map.tryFind candidateLocationName with
+    (LocationInBreadthSearch (candidateReversedPaths, candidateOpenValves, candidateScore, unopenedValveFlow)) =
+    //let checkOnePath candidateReversedPath =
+    let candidateLocationNames =
+        candidateReversedPaths
+        |> List.map currentPositionNameFromReversedPath
+    match maximaByLocationAndValves |> Map.tryFind candidateLocationNames with
     | Some maximaByValves ->
         let atLeastOneEquivalentOrBetterExists =
             maximaByValves
@@ -765,16 +818,18 @@ let filterCandidateLocationBasedOnState
                     existingPositionScore >= candidateScore)
         not atLeastOneEquivalentOrBetterExists
     | None -> true
+    //candidateReversedPaths |> Seq.forall checkOnePath
 
 candidateNextLocations
+    part1Parameters
     testSummarized
     0
-    (LocationInBreadthSearch ([PathMoveStep "BB"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81))
-    |> Seq.filter (filterCandidateLocationBasedOnState testInitialBreadthSearchState)
+    (LocationInBreadthSearch ([[PathMoveStep "BB"; PathMoveStep "AA"]], testEmptyNodeSet, 0, 81))
+    |> Seq.filter (filterCandidateLocationBasedOnState testInitialBreadthSearchStatePart1)
     |> List.ofSeq =!
     [
-        LocationInBreadthSearch ([PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"], (nodeSetFromLabel testNodeNames "BB"), 13*28, 81 - 13);
-        LocationInBreadthSearch ([PathMoveStep "CC"; PathMoveStep "BB"; PathMoveStep "AA"], testEmptyNodeSet, 0, 81);
+        LocationInBreadthSearch ([[PathOpenStep; PathMoveStep "BB"; PathMoveStep "AA"]], (nodeSetFromLabel testNodeNames "BB"), 13*28, 81 - 13);
+        LocationInBreadthSearch ([[PathMoveStep "CC"; PathMoveStep "BB"; PathMoveStep "AA"]], testEmptyNodeSet, 0, 81);
     ]
 
 // Having produced a list of candidates and removed any that are demonstrably less good
@@ -797,23 +852,25 @@ candidateNextLocations
 // not true.)
 
 let reduceCandidatesToSingleBest candidates =
-    let candidatesByCurrentLocation =
+    let candidatesByCurrentLocations =
         candidates
         |> Seq.fold
             (fun bestCandidatesByLocation location ->
-                let (LocationInBreadthSearch (reversedPath, openValves, score, unopenedValveFlow)) = location
-                let locationName = currentPositionNameFromReversedPath reversedPath
+                let (LocationInBreadthSearch (reversedPaths, openValves, score, unopenedValveFlow)) = location
+                let locationNames =
+                    reversedPaths
+                    |> List.map currentPositionNameFromReversedPath
                 Map.add
-                    locationName
-                    (match bestCandidatesByLocation |> Map.tryFind locationName with
+                    locationNames
+                    (match bestCandidatesByLocation |> Map.tryFind locationNames with
                     | Some candidates -> location::candidates
                     | None -> [location])
                     bestCandidatesByLocation)
             (Map.empty)
-    candidatesByCurrentLocation
+    candidatesByCurrentLocations
     |> Map.toSeq
     |> Seq.collect
-        (fun (currentLocation, allCandidatesLeadingHere) ->
+        (fun (currentLocations, allCandidatesLeadingHere) ->
             // We want to pick the best. In cases where there is a tie,
             // we pick one. In cases where there are multiple potential 'best'
             // values (because this is a partial order) we want to pick all
@@ -867,26 +924,26 @@ let reduceCandidatesToSingleBest candidates =
 
 
 reduceCandidatesToSingleBest
-    [LocationInBreadthSearch ([PathMoveStep "AA"], testEmptyNodeSet, 0, 81)] |> List.ofSeq
+    [LocationInBreadthSearch ([[PathMoveStep "AA"]], testEmptyNodeSet, 0, 81)] |> List.ofSeq
     =!
-    [LocationInBreadthSearch ([PathMoveStep "AA"], testEmptyNodeSet, 0, 81)]
+    [LocationInBreadthSearch ([[PathMoveStep "AA"]], testEmptyNodeSet, 0, 81)]
 
 reduceCandidatesToSingleBest
-    [LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "DD"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"], nodeSetFromLabels testNodeNames ["CC"], 54, 81 - 2);
-     LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"], nodeSetFromLabels testNodeNames ["CC"], 54, 81 - 2)] |> List.ofSeq
+    [LocationInBreadthSearch ([[PathMoveStep "AA"; PathMoveStep "DD"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"]], nodeSetFromLabels testNodeNames ["CC"], 54, 81 - 2);
+     LocationInBreadthSearch ([[PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"]], nodeSetFromLabels testNodeNames ["CC"], 54, 81 - 2)] |> List.ofSeq
     =!
-    [LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"], nodeSetFromLabels testNodeNames ["CC"], 54, 81 - 2)]
+    [LocationInBreadthSearch ([[PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "BB"]], nodeSetFromLabels testNodeNames ["CC"], 54, 81 - 2)]
 
 reduceCandidatesToSingleBest
-    [LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "DD"; PathOpenStep], nodeSetFromLabels testNodeNames ["CC";"DD"], 554, 81 - - 20);
-     LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "DD"; PathOpenStep; PathMoveStep "CC"; PathOpenStep; PathMoveStep "DD"], nodeSetFromLabels testNodeNames ["CC";"DD"], 612, 81 - 2 - 20)
+    [LocationInBreadthSearch ([[PathMoveStep "AA"; PathMoveStep "BB"; PathMoveStep "CC"; PathOpenStep; PathMoveStep "DD"; PathOpenStep]], nodeSetFromLabels testNodeNames ["CC";"DD"], 554, 81 - - 20);
+     LocationInBreadthSearch ([[PathMoveStep "AA"; PathMoveStep "DD"; PathOpenStep; PathMoveStep "CC"; PathOpenStep; PathMoveStep "DD"]], nodeSetFromLabels testNodeNames ["CC";"DD"], 612, 81 - 2 - 20)
      ] |> List.ofSeq
     =!
-    [LocationInBreadthSearch ([PathMoveStep "AA"; PathMoveStep "DD"; PathOpenStep; PathMoveStep "CC"; PathOpenStep; PathMoveStep "DD"], nodeSetFromLabels testNodeNames ["CC";"DD"], 612, 81 - 2 - 20)]
+    [LocationInBreadthSearch ([[PathMoveStep "AA"; PathMoveStep "DD"; PathOpenStep; PathMoveStep "CC"; PathOpenStep; PathMoveStep "DD"]], nodeSetFromLabels testNodeNames ["CC";"DD"], 612, 81 - 2 - 20)]
 
 
-let walkNetwork network =
-    let initialBreadthSearchState = getInitialBreadthSearchState network
+let walkNetwork problemParameters network =
+    let initialBreadthSearchState = getInitialBreadthSearchState problemParameters network
     Seq.unfold
         (fun state ->
             let (BreadthSearchState (currentLocations, currentMaxima)) = state
@@ -896,7 +953,7 @@ let walkNetwork network =
                 |> Seq.max
             let candidates =
                 currentLocations
-                |> Seq.collect (candidateNextLocations network bestScoreFromLastRound)
+                |> Seq.collect (candidateNextLocations problemParameters network bestScoreFromLastRound)
             let candidatesNotObviouslyWorseThanEarlierLocations =
                 candidates
                 |> Seq.filter (filterCandidateLocationBasedOnState state)
@@ -907,46 +964,48 @@ let walkNetwork network =
                 bestNextLocations
                 |> Seq.fold
                     (fun maxima location ->
-                        let (LocationInBreadthSearch (currentReversedPath, openValves, score, unopenedValveFlow)) = location 
-                        let currentPositionName = currentPositionNameFromReversedPath currentReversedPath
-                        match Map.tryFind currentPositionName maxima with
+                        let (LocationInBreadthSearch (currentReversedPaths, openValves, score, unopenedValveFlow)) = location 
+                        let currentPositionNames =
+                            currentReversedPaths
+                            |> List.map currentPositionNameFromReversedPath
+                        match Map.tryFind currentPositionNames maxima with
                         | Some positionMaxima ->
                             // Here, positionMaxima is a list of (open valve, score) entries for
                             // previously discovered routes to currentPositionName. We need to
                             // see whether this new LocationInBreadthSearch either adds a new open
                             // valve set for this position, or achieves a higher score for an open
                             // valve set already seen.
-                            let (stillToAdd, updatedMaxima) =
-                                positionMaxima
-                                |> List.fold
-                                    (fun (finished, updatedList) maximum ->
-                                        // If we already either replaced an existing maximum with our
-                                        // new location, or determined that an existing maximum achieved
-                                        // the same valve set with a better score than our new location,
-                                        // then we're basically done, and just need to pass all remaining
-                                        // maxima through.
-                                        if finished then (true, maximum::updatedList)
-                                        else
-                                            let (thisOpenValves, thisScore) = maximum
-                                            if thisOpenValves = openValves then
-                                                if score > thisScore then
-                                                    // The position we're looking to add has the
-                                                    // same open valves and a higher score than an
-                                                    // existing position, so we record it as the
-                                                    // new maximum.
-                                                    (true, (openValves, score)::updatedList)
-                                                else
-                                                    // This position has the same valves but a lower
-                                                    // than or equal score, so we retain the existing
-                                                    // maximum.
-                                                    (true, maximum::updatedList)
-                                            else
-                                                // Not a match, so pass through the existing maximum
-                                                // and keep looking.
-                                            (false, maximum::updatedList))
-                                    (false, [])
+                            //let (stillToAdd, updatedMaxima) =
+                            //    positionMaxima
+                            //    |> List.fold
+                            //        (fun (finished, updatedList) maximum ->
+                            //            // If we already either replaced an existing maximum with our
+                            //            // new location, or determined that an existing maximum achieved
+                            //            // the same valve set with a better score than our new location,
+                            //            // then we're basically done, and just need to pass all remaining
+                            //            // maxima through.
+                            //            if finished then (true, maximum::updatedList)
+                            //            else
+                            //                let (thisOpenValves, thisScore) = maximum
+                            //                if thisOpenValves = openValves then
+                            //                    if score > thisScore then
+                            //                        // The position we're looking to add has the
+                            //                        // same open valves and a higher score than an
+                            //                        // existing position, so we record it as the
+                            //                        // new maximum.
+                            //                        (true, (openValves, score)::updatedList)
+                            //                    else
+                            //                        // This position has the same valves but a lower
+                            //                        // than or equal score, so we retain the existing
+                            //                        // maximum.
+                            //                        (true, maximum::updatedList)
+                            //                else
+                            //                    // Not a match, so pass through the existing maximum
+                            //                    // and keep looking.
+                            //                (false, maximum::updatedList))
+                            //        (false, [])
                             maxima
-                        | None -> Map.add currentPositionName [(openValves, score)] maxima
+                        | None -> Map.add currentPositionNames [(openValves, score)] maxima
                         )
                     currentMaxima
             Some (bestNextLocations, BreadthSearchState (bestNextLocations, newMaxima)))
@@ -957,12 +1016,14 @@ let displayPathStep step =
     | PathOpenStep -> "O"
     | PathMoveStep l -> l
 
-let displayLocation nodeNames (LocationInBreadthSearch (reversedPath, openValves, score, unopenedValveFlow)) =
+let displayLocation nodeNames (LocationInBreadthSearch (reversedPaths, openValves, score, unopenedValveFlow)) =
     sprintf
-        "%d(%d): %s-(%A)"
+        "%d(%d): [%s]-(%A)"
         score
         unopenedValveFlow
-        (System.String.Join(", ", (Seq.rev reversedPath |> Seq.map displayPathStep)))
+        (System.String.Join("; ", reversedPaths
+         |> Seq.map (fun reversedPath ->
+            (System.String.Join(", ", (Seq.rev reversedPath |> Seq.map displayPathStep))))))
         (labelsFromNodeSet nodeNames openValves)
 
 let sw = new System.Diagnostics.Stopwatch ()
@@ -970,7 +1031,7 @@ let solvePart1 summarized =
     sw.Restart()
     let mutable result = 0
     let (SummarizedNetwork (_, nodeNames, _)) = summarized
-    for locations in ((walkNetwork summarized) |> Seq.take 30) do
+    for locations in ((walkNetwork part1Parameters summarized) |> Seq.take 30) do
         let newLocationsAvailable = Seq.isEmpty locations |> not
 
         if newLocationsAvailable then
@@ -997,6 +1058,49 @@ let solvePart1 summarized =
 
 solvePart1 testSummarized =! 1651
 solvePart1 summarized =! 2330
+
+let sw2 = new System.Diagnostics.Stopwatch ()
+let solvePart2 summarized =
+    sw.Restart()
+    let mutable result = 0
+    let (SummarizedNetwork (_, nodeNames, _)) = summarized
+    sw2.Start()
+    for locations in ((walkNetwork part2Parameters summarized) |> Seq.take 26) do
+        sw2.Stop()
+        printf "Step time: %A\n" sw2.Elapsed
+        sw2.Restart()
+        let newLocationsAvailable = Seq.isEmpty locations |> not
+
+        if newLocationsAvailable then
+            result <- (locations |> Seq.map (fun (LocationInBreadthSearch (_,_,score, _)) -> score) |> Seq.max)
+        //let sortedLocations =
+        //    locations
+        //    |> Seq.sortBy
+        //        (fun (LocationInBreadthSearch (reversedPaths, _,_,_)) ->
+        //            reversedPaths
+        //            |> List.map
+        //                (fun reversedPath ->
+        //                    Seq.rev reversedPath
+        //                    |> Seq.map (fun p ->
+        //                        match p with
+        //                        | PathOpenStep -> " "
+        //                        | PathMoveStep l -> l)
+        //                    |> List.ofSeq))
+        //for location in sortedLocations do
+        //    printf "%s\n" (displayLocation nodeNames location)
+
+        printf "Max: %d\n" result
+        if newLocationsAvailable then
+            printf "  %A\n\n" (locations |> Seq.maxBy (fun (LocationInBreadthSearch (_,_,score, _)) -> score) |> displayLocation nodeNames)
+    sw.Stop()
+    printf "Time: %A\n" sw.Elapsed
+    printf "Max: %d\n" result
+    result
+
+solvePart2 testSummarized =! 1707
+solvePart2 summarized |> ignore
+//solvePart1 summarized =! 2330
+
 
 // Input has 15 nodes with a non-zero flow rate
 
