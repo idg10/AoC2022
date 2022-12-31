@@ -259,7 +259,8 @@ let labelsFromNodeSet (NodeNameSet (_, bitIndexToName)) (nodeset:NodeSet) =
 type SummarizedNetwork =
     SummarizedNetwork
         of allSites:Map<string, ValveSite> *
-        nodeNames:NodeNameSet
+        nodeNames:NodeNameSet *
+        distances:int array2d
 
 let summarizeNetwork (sites:ValveSite list) =
     let siteMap =
@@ -269,23 +270,54 @@ let summarizeNetwork (sites:ValveSite list) =
                 let (ValveSite (Valve valve, _, _)) = valveSite
                 sites |> Map.add valve valveSite)
             Map.empty
-    SummarizedNetwork (siteMap, siteMap.Keys |> makeNodeNameSet)
+
+    let nodeNames = siteMap.Keys |> makeNodeNameSet
+    let (NodeNameSet (nameToBitIndex, _)) = nodeNames
+
+    // https://en.wikipedia.org/wiki/Floyd%E2%80%93Warshall_algorithm implementation
+    // to determine the shortest distance between each pair of nodes.
+    // Start out with all distances initialized to ∞ (infinity)
+    let vertexCount = siteMap.Count
+    let dist = Array2D.create vertexCount vertexCount System.Int32.MaxValue
+    let edges =
+        siteMap
+        |> Map.toSeq
+        |> Seq.collect (fun (fromName, (ValveSite (_, _, tunnels))) ->
+            let u = nameToBitIndex[nodeLabelToInt(fromName)]
+            tunnels
+            |> Seq.map (fun (Valve toName) ->
+                let v = nameToBitIndex[nodeLabelToInt(toName)]
+                (int u, int v)))
+
+    // Fill in the direct connections.
+    for (u, v) in edges do
+        dist[u,v] <- 1 // Edge weights are all 1 in this puzzle
+
+    // The cost of getting from any vertex to itself is 0.
+    let endV = (vertexCount - 1)
+    for v in [0..endV] do
+        dist[v,v] <- 0
+
+    for k in [0..endV] do
+        for i in [0..endV] do
+            for j in [0..endV] do
+                if dist[i,k] < System.Int32.MaxValue && dist[k,j] < System.Int32.MaxValue then
+                    let viaK = dist[i,k] + dist[k,j]
+                    if dist[i,j] > viaK then
+                        dist[i,j] <- viaK
+    SummarizedNetwork (siteMap, nodeNames, dist)
 
 let testSummarized = (summarizeNetwork testSites)
-let (SummarizedNetwork (_, testNodeNames)) = testSummarized
+let (SummarizedNetwork (_, testNodeNames, testDistances)) = testSummarized
 let testEmptyNodeSet = emptyNodeSet testNodeNames
 printf "Test summarized: %A\n" testSummarized
 
 let summarized = (summarizeNetwork sites)
-let (SummarizedNetwork (_, nodeNames)) = testSummarized
+let (SummarizedNetwork (_, nodeNames, distances)) = summarized
 printf "Sites summarized: %A\n" summarized
 
-
-// A completely different way to approach this might be to try to summarize sections.
-// If are at HH at time T, it could be turned on at a rate of 22 for the remaining
-// 30-T minutes. (E.g., if you were at HH at the start of minute 1, you could have the
-// valve open at the end of minute 1, providing 29 minutes of flow.)
-// So we could represent JJ as (fun arrivedAtMinute -> 22 * (maxMinutes - arrivedAtMinute))
+//printf "Test distances:\n%A\n\n" testDistances
+//printf "Distances:\n%A\n\n" distances
 
 // What would a breadth-first approach look like? We'd want to start culling as soon as
 // possible. So let's look at that:
@@ -525,7 +557,7 @@ let currentPositionNameFromReversedPath path =
 
 
 let getInitialLocation network =
-    let (SummarizedNetwork (sites, nodeNames)) = network
+    let (SummarizedNetwork (sites, nodeNames, _)) = network
     let totalFlow = sites.Values |> Seq.sumBy (fun (ValveSite (_, flowRate, _)) -> flowRate)
     LocationInBreadthSearch ([PathMoveStep "AA"], (emptyNodeSet nodeNames), 0, totalFlow)
 
@@ -533,11 +565,13 @@ let testInitialLocation = getInitialLocation testSummarized
 let inputInitialLocation = getInitialLocation summarized
 
 let candidateNextLocations network bestScoreFromLastRound currentLocation =
-    let (SummarizedNetwork (sites, nodeNames)) = network
+    let (SummarizedNetwork (sites, nodeNames, distances)) = network
+    let nodeCount = Array2D.length1 distances
     let (LocationInBreadthSearch (currentReversedPath, openValves, score, unopenedValveFlow)) = currentLocation
     let minutesRemaining = 30 - (currentReversedPath.Length)
     let currentPositionName = currentPositionNameFromReversedPath currentReversedPath
     let currentPositionAsNodeSet = nodeSetFromLabel nodeNames currentPositionName
+    let (NodeNameSet (nameToBitIndex, bitIndexToName)) = nodeNames
     match sites |> Map.tryFind currentPositionName with
     | Some (ValveSite (_, flowRate, tunnels)) ->
         let openStepIfApplicable =
@@ -575,6 +609,52 @@ let candidateNextLocations network bestScoreFromLastRound currentLocation =
         let scoreFromOpeningRemainingValves = unopenedValveFlow * (minutesRemaining - 1)
         let scoreUpperBound = score + scoreFromOpeningRemainingValves
         scoreUpperBound >= bestScoreFromLastRound)
+    // Having done the easy culling, we can now do something a bit more subtle. We can produce
+    // a map that tells us, for each position, the distances from that position to each of the
+    // other non-zero valve locations. E.g., if we are at DD, that would be the following:
+    //  BB13: 2 steps
+    //  CC2:  1 step
+    //  DD20: 0 steps
+    //  EE3:  1 step
+    //  HH22: 4 steps
+    //  JJ21: 3 steps
+    // The simple max calculation above just adds together remaining flow (13+2+20+3+22+21=81)
+    // and multiplies it by the time remaining at the end of this step (minutesRemaining). But
+    // really the calculation should be:
+    //  (13*(minutesRemaining-2) + 2*(minutesRemaining-1) + 20 + 3*(minutesRemaining-1)
+    //      + 22*(minutesRemaining-4) + 21*(minutesRemaining-3))
+    // E.g., if there are 10 minutes remaining, the simple calcluation would give us max=810
+    // but the more complex calcluation gives us:
+    //      13*8 + 2*9 + 20 + 3*9 + 22*6 + 21*7
+    //  =   104  + 18  + 20 + 27  + 132  + 147
+    //  = 448
+    // This is still significantly higher than it would be possible to achieve, because
+    // it entails magically cloning ourselves into 6 entities, each of which travels to one
+    // of the 6 remaining valves and then opens it. In practice, we're limited to doing one
+    // thing at a time. But for min/max purposes, all that matters is that we are able to
+    // produce a number which is guaranteed not to be lower than the highest possible real
+    // value. And this certainly meets that criterion. And it does so in a way that has a
+    // decent chance of significantly trimming down the search space.
+    |> Seq.filter (fun (LocationInBreadthSearch (reversedPath, openValves, score, _)) ->
+        let fromNodeName = currentPositionNameFromReversedPath reversedPath
+        let fromNodeBitPosition = int nameToBitIndex[nodeLabelToInt fromNodeName]
+        let sumOfBestPossibleScoreFromRemainingValves =
+            [0..(nodeCount - 1)]
+            |> Seq.sumBy (fun toNodeBitPosition ->
+                let toNode = NodeSet (1UL <<< toNodeBitPosition)
+                if (nodeSetContains toNode openValves) then
+                    // The target valve we're looking at is already open, so we've
+                    // nothing more to gain from it.
+                    0
+                else
+                    let toNodeName = bitIndexToName[toNodeBitPosition]
+                    let (ValveSite (_, flowRate, _)) = sites[toNodeName]
+                    let distanceToValve = distances[fromNodeBitPosition, toNodeBitPosition]
+                    let bestCaseTimeWithValveOpen = max 0 (minutesRemaining - distanceToValve - 1)
+                    bestCaseTimeWithValveOpen * flowRate)
+        let scoreUpperBound = sumOfBestPossibleScoreFromRemainingValves + score
+        scoreUpperBound >= bestScoreFromLastRound)
+
 
 candidateNextLocations testSummarized 0 testInitialLocation |> List.ofSeq =!
     [
@@ -608,7 +688,7 @@ type BreadthSearchState =
     maximaByLocationThenValves:Map<string, (NodeSet * int) list>
 let getInitialBreadthSearchState network =
     let initialLocation = getInitialLocation network
-    let (SummarizedNetwork (_, nodeNames)) = network
+    let (SummarizedNetwork (_, nodeNames, _)) = network
     BreadthSearchState ([initialLocation], Map.empty |> Map.add "AA" [(emptyNodeSet nodeNames, 0)])
 let testInitialBreadthSearchState = getInitialBreadthSearchState testSummarized
 let inputInitialBreadthSearchState = getInitialBreadthSearchState summarized
@@ -885,9 +965,11 @@ let displayLocation nodeNames (LocationInBreadthSearch (reversedPath, openValves
         (System.String.Join(", ", (Seq.rev reversedPath |> Seq.map displayPathStep)))
         (labelsFromNodeSet nodeNames openValves)
 
+let sw = new System.Diagnostics.Stopwatch ()
 let solvePart1 summarized =
+    sw.Restart()
     let mutable result = 0
-    let (SummarizedNetwork (_, nodeNames)) = summarized
+    let (SummarizedNetwork (_, nodeNames, _)) = summarized
     for locations in ((walkNetwork summarized) |> Seq.take 30) do
         let newLocationsAvailable = Seq.isEmpty locations |> not
 
@@ -905,52 +987,16 @@ let solvePart1 summarized =
         //            |> List.ofSeq)
         //for location in sortedLocations do
         //    printf "%s\n" (displayLocation location)
-        printf "Max: %d\n" result
-        if newLocationsAvailable then
-            printf "  %A\n\n" (locations |> Seq.maxBy (fun (LocationInBreadthSearch (_,_,score, _)) -> score) |> displayLocation nodeNames)
+        //printf "Max: %d\n" result
+        //if newLocationsAvailable then
+        //    printf "  %A\n\n" (locations |> Seq.maxBy (fun (LocationInBreadthSearch (_,_,score, _)) -> score) |> displayLocation nodeNames)
+    sw.Stop()
+    printf "Time: %A\n" sw.Elapsed
+    printf "Max: %d\n" result
     result
 
 solvePart1 testSummarized =! 1651
 solvePart1 summarized =! 2330
-
-// Another possible approach would be to work out what the fastest route to every
-// valve is, because that would tell us the maximum score available from that. Could
-// we do this as a series of rounds?
-// 1:
-//    BB - (AA,BB,O):13*28 = 364
-//    CC - (AA,BB,CC,O):2*27 = 54
-// X     - (AA,DD,CC,O):2*27 = 54
-//    DD - (AA,DD,O):20*28 = 560
-//    HH - (AA,DD,EE,FF,GG,HH,O):22*24 = 88
-//    JJ - (AA,II,JJ,O): 21*27 = 520
-// We can discard one of the CC routes because they both produce exactly the same result.
-// It doesn't matter which.
-// 2:
-//    BB,CC - (AA,BB,O,CC,O):364 + 26*2 = 364 + 52 = 416
-//    BB,DD - (AA,BB,O,AA,DD,O):364 + 25*20 = 364 + 500 = 864
-// X          (AA,BB,O,CC,DD,O):364 + 25*20
-//    BB,HH - (AA,BB,O,AA,DD,EE,FF,GG,HH,O):364 + 21*22 = 364 + 462 = 826
-// X          (AA,BB,O,CC,DD,EE,FF,GG,HH,O):364 + 21*22
-//    BB,JJ - (AA,BB,O,AA,II,JJ,O):364 + 24*21 + 504 = 868
-//    CC,BB - (AA,BB,CC,O,BB,O):54 + 25*13
-//    CC,DD
-//    CC,HH
-//    CC,JJ
-//    DD,BB
-//    DD,CC
-//    DD,HH
-//    DD,JJ
-//    HH,BB
-//    HH,CC
-//    HH,DD
-//    HH,JJ
-//    JJ,BB
-//    JJ,CC
-//    JJ,DD
-//    JJ,HH
-
-
-
 
 // Input has 15 nodes with a non-zero flow rate
 
